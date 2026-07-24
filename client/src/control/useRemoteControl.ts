@@ -115,30 +115,18 @@ export function useRemoteControl(
       });
     };
 
-    const onClick = (e: MouseEvent) => {
-      if (!enabledRef.current) return;
-      const { x, y } = normalizedCoords(canvas, contentRectRef.current, e.clientX, e.clientY);
-      sendRef.current({
-        type: "mouse",
-        action: "click",
-        x,
-        y,
-        button: buttonName(e.button),
-      });
-    };
+    // We forward only raw down/up/move (the RFB/VNC model): the agent OS turns
+    // press+release into a click, rapid press/release/press/release into a
+    // double-click, and press+move+release into a drag. We deliberately do NOT
+    // also send the browser's synthesized `click`/`dblclick`/`contextmenu`
+    // events — doing so would actuate every button a second time (a single
+    // click would fire twice, a right-click would open the menu twice, etc.).
 
     const onContextMenu = (e: MouseEvent) => {
       if (!enabledRef.current) return;
-      // Prevent the browser menu so right-click reaches the agent.
+      // Only stop the browser's own context menu; the right-button down/up
+      // already sent via onMouseDown/onMouseUp produces the remote right-click.
       e.preventDefault();
-      const { x, y } = normalizedCoords(canvas, contentRectRef.current, e.clientX, e.clientY);
-      sendRef.current({
-        type: "mouse",
-        action: "click",
-        x,
-        y,
-        button: "right",
-      });
     };
 
     const onWheel = (e: WheelEvent) => {
@@ -178,7 +166,6 @@ export function useRemoteControl(
     canvas.addEventListener("mousemove", onMouseMove);
     canvas.addEventListener("mousedown", onMouseDown);
     canvas.addEventListener("mouseup", onMouseUp);
-    canvas.addEventListener("click", onClick);
     canvas.addEventListener("contextmenu", onContextMenu);
     canvas.addEventListener("wheel", onWheel, { passive: false });
     canvas.addEventListener("keydown", onKeyDown);
@@ -188,7 +175,6 @@ export function useRemoteControl(
       canvas.removeEventListener("mousemove", onMouseMove);
       canvas.removeEventListener("mousedown", onMouseDown);
       canvas.removeEventListener("mouseup", onMouseUp);
-      canvas.removeEventListener("click", onClick);
       canvas.removeEventListener("contextmenu", onContextMenu);
       canvas.removeEventListener("wheel", onWheel);
       canvas.removeEventListener("keydown", onKeyDown);
