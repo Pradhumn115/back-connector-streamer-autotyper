@@ -2,10 +2,11 @@
 import { FfmpegCapture } from "../agent/dist/capture/ffmpeg.js";
 
 const seconds = Number(process.argv[2] || 3);
+const intervalMs = Number(process.argv[3] || 16); // default ~60fps target
 const cap = new FfmpegCapture({ maxWidth: 1440, quality: 6 });
 let frames = 0;
 let bytes = 0;
-cap.setInterval(33); // ~30fps
+cap.setInterval(intervalMs);
 cap.start((img) => {
   frames++;
   bytes += img.data.byteLength;

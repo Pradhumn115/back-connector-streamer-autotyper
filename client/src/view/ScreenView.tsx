@@ -27,7 +27,9 @@ interface ScreenViewProps {
 // Interval used for each mode (matches guidance in the protocol notes).
 export const MODE_INTERVAL_MS: Record<StreamMode, number> = {
   screenshot: 2000,
-  video: 33, // ~30fps target (needs ffmpeg on the agent; else capped lower)
+  // ~60fps target (needs ffmpeg on the agent; real rate is capped by the
+  // agent's display refresh and available bandwidth).
+  video: 16,
 };
 
 /**
@@ -105,9 +107,9 @@ export function ScreenView({
   }, [frame, canvasRef]);
 
   return (
-    <div className="screen-view">
-      <div className="screen-toolbar">
-        <div className="mode-toggle">
+    <>
+      <div className="stage-toolbar">
+        <div className="seg">
           <button
             className={mode === "screenshot" ? "active" : ""}
             onClick={() => onSetMode("screenshot")}
@@ -121,23 +123,34 @@ export function ScreenView({
             Video
           </button>
         </div>
-        <div className="screen-readout">
-          <span>mode: {mode}</span>
-          <span>fps: {fps.toFixed(1)}</span>
-          {frame && <span>seq: {frame.seq}</span>}
-          <span className={controlEnabled ? "ctl-on" : "ctl-off"}>
-            {controlEnabled ? "control ON" : "control off"}
+        <div className="readout">
+          <span>
+            mode <b>{mode}</b>
+          </span>
+          <span>
+            fps <b>{fps.toFixed(1)}</b>
+          </span>
+          {frame && (
+            <span>
+              seq <b>{frame.seq}</b>
+            </span>
+          )}
+          <span>
+            ctrl{" "}
+            <b className={controlEnabled ? "on" : "off"}>
+              {controlEnabled ? "ON" : "OFF"}
+            </b>
           </span>
         </div>
       </div>
-      <div className="canvas-wrap">
+      <div className={`canvas-wrap ${controlEnabled ? "is-controlling" : ""}`}>
         <canvas
           ref={canvasRef}
           tabIndex={0}
           className={controlEnabled ? "canvas controllable" : "canvas"}
         />
-        {!frame && <div className="canvas-empty">No frames yet</div>}
+        {!frame && <div className="canvas-empty">No signal</div>}
       </div>
-    </div>
+    </>
   );
 }

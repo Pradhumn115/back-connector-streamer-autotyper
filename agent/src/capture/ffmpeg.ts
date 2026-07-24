@@ -48,7 +48,9 @@ export class FfmpegCapture implements ScreenCapture {
   }
 
   setInterval(ms: number): void {
-    const fps = Math.min(60, Math.max(1, Math.round(1000 / ms)));
+    // Cap at 120fps; the real ceiling is the display refresh rate (e.g. 60Hz,
+    // or 120Hz on ProMotion) and available bandwidth.
+    const fps = Math.min(120, Math.max(1, Math.round(1000 / ms)));
     if (fps === this.fps) return;
     this.fps = fps;
     if (this.running) this.spawnFfmpeg(); // restart at the new rate

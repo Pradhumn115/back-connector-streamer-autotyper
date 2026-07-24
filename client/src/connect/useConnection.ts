@@ -22,8 +22,14 @@ export type ConnectionStatus =
 export interface ConnectParams {
   /** LAN address, e.g. "192.168.1.20:8443". Tried first. */
   lanAddress: string;
-  /** Optional Tailscale address, e.g. "100.x.y.z:8443". Fallback. */
+  /** Optional Tailscale address, e.g. "100.x.y.z:8443". Tried second. */
   tailscaleAddress: string;
+  /**
+   * Optional Cloudflare Tunnel hostname, e.g. "foo.trycloudflare.com" (no port
+   * — Cloudflare serves it on 443). Tried last, since it routes through
+   * Cloudflare's edge and is the highest-latency path.
+   */
+  tunnelAddress: string;
   /** Shared secret sent in the auth message. */
   secret: string;
 }
@@ -74,6 +80,7 @@ const MAX_BACKOFF_MS = 15000;
 const EMPTY_PARAMS: ConnectParams = {
   lanAddress: "",
   tailscaleAddress: "",
+  tunnelAddress: "",
   secret: "",
 };
 
@@ -85,6 +92,7 @@ function loadParams(): ConnectParams {
     return {
       lanAddress: parsed.lanAddress ?? "",
       tailscaleAddress: parsed.tailscaleAddress ?? "",
+      tunnelAddress: parsed.tunnelAddress ?? "",
       secret: parsed.secret ?? "",
     };
   } catch {
@@ -106,15 +114,25 @@ const mimeForFormat: Record<FrameFormat, string> = {
 };
 
 /**
+ * Turn user-entered address into a `wss://` URL, tolerating pasted schemes and
+ * trailing slashes (Cloudflare prints its tunnel URL as `https://…/`). Returns
+ * "" for blank input so callers can skip it.
+ */
+function normalizeTarget(raw: string): string {
+  const trimmed = raw.trim().replace(/\/+$/, "");
+  if (!trimmed) return "";
+  const hostPart = trimmed.replace(/^(wss?|https?):\/\//i, "");
+  return `wss://${hostPart}`;
+}
+
+/**
  * Ordered list of wss:// URLs to try for a given set of params.
- * LAN first, Tailscale second (if provided).
+ * LAN first (fastest), then Tailscale, then Cloudflare Tunnel (highest latency).
  */
 function buildTargets(p: ConnectParams): string[] {
-  const targets: string[] = [];
-  if (p.lanAddress.trim()) targets.push(`wss://${p.lanAddress.trim()}`);
-  if (p.tailscaleAddress.trim())
-    targets.push(`wss://${p.tailscaleAddress.trim()}`);
-  return targets;
+  return [p.lanAddress, p.tailscaleAddress, p.tunnelAddress]
+    .map(normalizeTarget)
+    .filter((t) => t !== "");
 }
 
 /**

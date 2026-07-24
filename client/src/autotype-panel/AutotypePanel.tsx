@@ -37,20 +37,23 @@ export function AutotypePanel({ send, autotype, disabled }: AutotypePanelProps) 
       : 0;
 
   return (
-    <div className="autotype-panel">
-      <h3>Autotype</h3>
+    <div className="card">
+      <div className="card-head">
+        <span className="card-title">Autotype · human-like</span>
+      </div>
       <textarea
         className="autotype-text"
         placeholder="Text to type into the agent…"
         value={text}
         onChange={(e) => setText(e.target.value)}
-        rows={6}
+        rows={5}
       />
 
-      <label className="field">
-        <span>
-          Base delay <em>{baseDelayMs} ms</em>
-        </span>
+      <div className="slider">
+        <div className="slider-head">
+          <span>Base delay</span>
+          <em>{baseDelayMs} ms</em>
+        </div>
         <input
           type="range"
           min={0}
@@ -59,12 +62,13 @@ export function AutotypePanel({ send, autotype, disabled }: AutotypePanelProps) 
           value={baseDelayMs}
           onChange={(e) => setBaseDelayMs(Number(e.target.value))}
         />
-      </label>
+      </div>
 
-      <label className="field">
-        <span>
-          Jitter <em>{jitterMs} ms</em>
-        </span>
+      <div className="slider">
+        <div className="slider-head">
+          <span>Jitter</span>
+          <em>±{jitterMs} ms</em>
+        </div>
         <input
           type="range"
           min={0}
@@ -73,12 +77,13 @@ export function AutotypePanel({ send, autotype, disabled }: AutotypePanelProps) 
           value={jitterMs}
           onChange={(e) => setJitterMs(Number(e.target.value))}
         />
-      </label>
+      </div>
 
-      <label className="field">
-        <span>
-          Typo rate <em>{typoRate.toFixed(2)}</em>
-        </span>
+      <div className="slider">
+        <div className="slider-head">
+          <span>Typo rate</span>
+          <em>{typoRate.toFixed(2)}</em>
+        </div>
         <input
           type="range"
           min={0}
@@ -87,7 +92,7 @@ export function AutotypePanel({ send, autotype, disabled }: AutotypePanelProps) 
           value={typoRate}
           onChange={(e) => setTypoRate(Number(e.target.value))}
         />
-      </label>
+      </div>
 
       <button
         className="type-it"
@@ -101,7 +106,7 @@ export function AutotypePanel({ send, autotype, disabled }: AutotypePanelProps) 
         <div className="progress-bar" style={{ width: `${pct}%` }} />
         <span className="progress-label">
           {autotype.total > 0
-            ? `${autotype.done} / ${autotype.total} (${pct}%)`
+            ? `${autotype.done} / ${autotype.total} · ${pct}%`
             : autotype.active
               ? "starting…"
               : "idle"}

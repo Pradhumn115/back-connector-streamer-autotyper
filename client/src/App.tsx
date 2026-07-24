@@ -15,6 +15,7 @@ export function App() {
   // Connect-bar form fields, seeded from cached params.
   const [lan, setLan] = useState<string>(conn.params.lanAddress);
   const [ts, setTs] = useState<string>(conn.params.tailscaleAddress);
+  const [tunnel, setTunnel] = useState<string>(conn.params.tunnelAddress);
   const [secret, setSecret] = useState<string>(conn.params.secret);
 
   const [mode, setMode] = useState<StreamMode>("screenshot");
@@ -29,11 +30,7 @@ export function App() {
   // On (re)connect, tell the agent the current mode so streaming starts.
   useEffect(() => {
     if (connected) {
-      conn.send({
-        type: "setMode",
-        mode,
-        intervalMs: MODE_INTERVAL_MS[mode],
-      });
+      conn.send({ type: "setMode", mode, intervalMs: MODE_INTERVAL_MS[mode] });
     }
     // Only fire on transition into connected; mode changes are handled by
     // onSetMode which sends its own setMode.
@@ -44,25 +41,20 @@ export function App() {
     conn.connect({
       lanAddress: lan,
       tailscaleAddress: ts,
+      tunnelAddress: tunnel,
       secret,
     });
   };
 
   const onSetMode = (next: StreamMode) => {
     setMode(next);
-    conn.send({
-      type: "setMode",
-      mode: next,
-      intervalMs: MODE_INTERVAL_MS[next],
-    });
+    conn.send({ type: "setMode", mode: next, intervalMs: MODE_INTERVAL_MS[next] });
   };
 
-  const statusLabel = (() => {
+  const statusText = (() => {
     switch (conn.status) {
       case "connected":
-        return conn.agentInfo
-          ? `connected · ${conn.agentInfo.nickname} · ${conn.agentInfo.screenWidth}×${conn.agentInfo.screenHeight}`
-          : "connected";
+        return "connected";
       case "connecting":
         return "connecting…";
       case "authenticating":
@@ -70,52 +62,104 @@ export function App() {
       case "reconnecting":
         return "reconnecting…";
       case "error":
-        return `error${conn.lastError ? `: ${conn.lastError}` : ""}`;
+        return "error";
       default:
         return "idle";
     }
   })();
 
+  const canConnect = conn.status === "idle" || conn.status === "error";
+
   return (
     <div className="app">
-      <header className="connect-bar">
-        <input
-          className="addr"
-          placeholder="LAN host:port"
-          value={lan}
-          onChange={(e) => setLan(e.target.value)}
-        />
-        <input
-          className="addr"
-          placeholder="Tailscale host:port (optional)"
-          value={ts}
-          onChange={(e) => setTs(e.target.value)}
-        />
-        <input
-          className="secret"
-          type="password"
-          placeholder="secret"
-          value={secret}
-          onChange={(e) => setSecret(e.target.value)}
-        />
-        {conn.status === "idle" || conn.status === "error" ? (
-          <button className="primary" onClick={onConnect}>
-            Connect
+      <header className="topbar">
+        <div className={`brand ${connected ? "is-live" : ""}`}>
+          <span className="brand-mark" />
+          <span className="brand-name">
+            Back<b>·</b>Connector
+          </span>
+          <span className="live-pill">{connected ? "LIVE" : "OFFLINE"}</span>
+        </div>
+
+        <div className="conn-fields">
+          <input
+            className="field-input"
+            placeholder="LAN  host:port"
+            value={lan}
+            onChange={(e) => setLan(e.target.value)}
+            autoCapitalize="off"
+            autoCorrect="off"
+            spellCheck={false}
+          />
+          <input
+            className="field-input"
+            placeholder="Tailscale  host:port"
+            value={ts}
+            onChange={(e) => setTs(e.target.value)}
+            autoCapitalize="off"
+            autoCorrect="off"
+            spellCheck={false}
+          />
+          <input
+            className="field-input"
+            placeholder="Tunnel  host"
+            value={tunnel}
+            onChange={(e) => setTunnel(e.target.value)}
+            autoCapitalize="off"
+            autoCorrect="off"
+            spellCheck={false}
+          />
+          <input
+            className="field-input"
+            type="password"
+            placeholder="secret"
+            value={secret}
+            onChange={(e) => setSecret(e.target.value)}
+          />
+        </div>
+
+        <div className="topbar-actions">
+          {canConnect ? (
+            <button className="btn btn-primary" onClick={onConnect}>
+              Connect
+            </button>
+          ) : (
+            <button className="btn btn-danger" onClick={conn.disconnect}>
+              Disconnect
+            </button>
+          )}
+          <button
+            className="btn btn-ghost panel-toggle-desktop"
+            onClick={() => setPanelOpen((v) => !v)}
+          >
+            {panelOpen ? "Hide" : "Panel"}
           </button>
-        ) : (
-          <button onClick={conn.disconnect}>Disconnect</button>
-        )}
-        <span className={`status status-${conn.status}`}>{statusLabel}</span>
-        <button
-          className="panel-toggle"
-          onClick={() => setPanelOpen((v) => !v)}
-        >
-          {panelOpen ? "Hide panel" : "Show panel"}
-        </button>
+        </div>
       </header>
 
-      <div className="body">
-        <main className="main">
+      <div className="status-strip">
+        <span className={`status-dot s-${conn.status}`} />
+        <span className="status-text">{statusText}</span>
+        {connected && conn.agentInfo && (
+          <>
+            <span className="status-sep">/</span>
+            <span>{conn.agentInfo.nickname}</span>
+            <span className="status-sep">/</span>
+            <span>
+              {conn.agentInfo.screenWidth}×{conn.agentInfo.screenHeight}
+            </span>
+          </>
+        )}
+        {conn.lastError && (
+          <>
+            <span className="status-sep">/</span>
+            <span className="status-error">{conn.lastError}</span>
+          </>
+        )}
+      </div>
+
+      <div className={`workspace ${panelOpen ? "" : "panel-closed"}`}>
+        <main className="stage">
           <ScreenView
             frame={conn.latestFrame}
             mode={mode}
@@ -126,53 +170,57 @@ export function App() {
           />
         </main>
 
-        {panelOpen && (
-          <aside className="side-panel">
-            <div className="control-toggle">
-              <label>
-                <input
-                  type="checkbox"
-                  checked={controlEnabled}
-                  onChange={(e) => setControlEnabled(e.target.checked)}
-                  disabled={!connected}
-                />
-                Control enabled
-              </label>
-              <p className="hint">
-                When on, mouse & keyboard on the screen are sent to the agent.
-                Click the screen to focus it for keys.
-              </p>
-            </div>
+        <aside className="panel">
+          <div className="card">
+            <label className="switch">
+              <input
+                type="checkbox"
+                checked={controlEnabled}
+                onChange={(e) => setControlEnabled(e.target.checked)}
+                disabled={!connected}
+              />
+              <span className="switch-track" />
+              <span className="switch-label">Remote control</span>
+            </label>
+            <p className="hint">
+              When on, your mouse &amp; keyboard over the screen drive the agent.
+              Click the screen to focus it for keystrokes.
+            </p>
+          </div>
 
-            <div className="control-toggle">
-              <label>
-                <input
-                  type="checkbox"
-                  checked={conn.inputLock.locked}
-                  onChange={(e) =>
-                    conn.send({ type: "setInputLock", locked: e.target.checked })
-                  }
-                  disabled={!connected || !conn.inputLock.supported}
-                />
-                Lock agent's local input
-              </label>
-              <p className="hint">
-                {connected && !conn.inputLock.supported
-                  ? "Not supported on this agent's OS yet (Windows only for now)."
-                  : conn.inputLock.locked
-                    ? "The agent's physical keyboard/mouse are blocked. Auto-releases after 10s of no activity, or when you disconnect."
-                    : "Blocks the person at the agent from interfering. Only their physical input is blocked — yours still works."}
-              </p>
-            </div>
+          <div className="card">
+            <label className="switch">
+              <input
+                type="checkbox"
+                checked={conn.inputLock.locked}
+                onChange={(e) =>
+                  conn.send({ type: "setInputLock", locked: e.target.checked })
+                }
+                disabled={!connected || !conn.inputLock.supported}
+              />
+              <span className="switch-track" />
+              <span className="switch-label">Lock agent's local input</span>
+            </label>
+            <p className={`hint ${conn.inputLock.locked ? "warn" : ""}`}>
+              {connected && !conn.inputLock.supported
+                ? "Not supported on this agent's OS yet."
+                : conn.inputLock.locked
+                  ? "Agent's physical keyboard/mouse are blocked. Auto-releases after 10s idle or on disconnect."
+                  : "Blocks the person at the agent from interfering — only your input gets through."}
+            </p>
+          </div>
 
-            <AutotypePanel
-              send={conn.send}
-              autotype={conn.autotype}
-              disabled={!connected}
-            />
-          </aside>
-        )}
+          <AutotypePanel
+            send={conn.send}
+            autotype={conn.autotype}
+            disabled={!connected}
+          />
+        </aside>
       </div>
+
+      <button className="panel-fab" onClick={() => setPanelOpen((v) => !v)}>
+        {panelOpen ? "✕ Close" : "⚙ Controls"}
+      </button>
     </div>
   );
 }
