@@ -21,7 +21,11 @@ export const AuthMessage = z.object({
 export const SetModeMessage = z.object({
   type: z.literal("setMode"),
   mode: StreamMode,
-  intervalMs: z.number().int().min(20).max(60_000),
+  // Min 4ms allows up to ~250fps requests (agent caps the real rate to 120 and
+  // to what the display/capture can sustain). It must stay below the highest-fps
+  // interval the client sends — 120fps = ~8ms, 60fps = ~17ms — or the agent
+  // rejects setMode as malformed and streaming stalls at the default interval.
+  intervalMs: z.number().int().min(4).max(60_000),
 });
 
 export const MouseButton = z.enum(["left", "right", "middle"]);

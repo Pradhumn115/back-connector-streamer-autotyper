@@ -12,8 +12,10 @@
     "build": "npm run build --workspace shared && npm run build --workspace agent && npm run build --workspace client",
     "test": "npm run test --workspace shared && npm run test --workspace agent && npm run test --workspace client",
     "typecheck": "npm run typecheck --workspaces --if-present",
+    "setup": "node scripts/setup.mjs",
     "agent": "npm run start --workspace agent",
-    "client": "npm run dev --workspace client"
+    "client": "npm run dev --workspace client",
+    "tunnel": "node scripts/tunnel.mjs"
   },
   "license": "MIT"
 }

@@ -6,8 +6,11 @@ view its screen, control its mouse/keyboard, and run a human-like autotyper.
 
 - **No relay server, no VPS.** The client connects directly to the agent.
 - **LAN:** works with zero extra software — connect to the agent's `192.168.x.x`.
-- **Remote (different networks):** install [Tailscale](https://tailscale.com) on
+- **Remote (your own devices):** install [Tailscale](https://tailscale.com) on
   both machines and connect to the agent's `100.x.y.z` address.
+- **Remote (no VPN, behind double NAT):** run a
+  [Cloudflare Tunnel](#remote-access-via-cloudflare-tunnel) with `npm run tunnel`
+  and connect to the `*.trycloudflare.com` URL it prints.
 
 > ⚠️ This controls a real machine's keyboard, mouse, and screen. Only run it on
 > machines you own or are authorized to control. It has no stealth features by
@@ -35,8 +38,20 @@ client/   web app (React + Vite): view screen, control, autotype panel
 
 ```bash
 npm install          # installs all workspaces
+npm run setup        # auto-installs prerequisites (ffmpeg, cloudflared) per-OS
 npm run build        # builds shared, agent, client
 ```
+
+`npm run setup` installs the agent's optional prerequisites using whatever
+package manager the OS has (Homebrew on macOS; winget/choco/scoop on Windows;
+apt/dnf/pacman on Linux):
+
+- **ffmpeg** — enables high-fps screen capture. Without it the agent falls back
+  to a slow per-frame path (a few fps). **On Windows this is the fix for low
+  video fps.** After it installs on Windows, open a NEW terminal so PATH updates,
+  then `npm run agent`.
+- **cloudflared** — optional, only needed for `npm run tunnel` (remote access
+  without a VPN).
 
 ## Run the agent (on the machine to control)
 
@@ -67,12 +82,13 @@ npm run client       # starts Vite dev server (http://localhost:5173)
 In the client:
 
 1. Enter the agent's **LAN address** (e.g. `192.168.1.20:8443`) and, if you'll
-   connect remotely, its **Tailscale address** too.
+   connect remotely, its **Tailscale address** and/or **Tunnel host** too.
 2. Enter the **secret** from the agent banner.
-3. Connect. The browser will warn about the self-signed certificate the first
-   time — that's expected; verify it matches the agent's printed SHA-256
-   fingerprint, then proceed. The client tries the LAN address first and falls
-   back to Tailscale.
+3. Connect. For LAN/Tailscale the browser warns about the self-signed
+   certificate the first time — that's expected; verify it matches the agent's
+   printed SHA-256 fingerprint, then proceed. (A Cloudflare Tunnel URL uses
+   Cloudflare's own trusted cert, so there's no warning to accept.) The client
+   tries LAN first, then Tailscale, then the tunnel.
 
 Then:
 
@@ -105,14 +121,62 @@ implemented yet**, so the agent reports the feature as unsupported and the clien
 disables the toggle — it never shows a false "locked" state. (Adding it needs a
 native `CGEventTap` on macOS / `EVIOCGRAB` on Linux.)
 
+> ⚠️ **Windows requires an elevated agent.** `BlockInput` is governed by
+> Windows' UIPI: from a normal (non-elevated) process it is silently refused and
+> blocks nothing. Start the agent from a terminal opened with **"Run as
+> administrator"**. If the agent isn't elevated, the lock request fails cleanly —
+> the client shows *not* locked plus a "run as Administrator" message, rather
+> than a false lock.
+
+## Remote access via Cloudflare Tunnel
+
+If both machines can't be on a Tailscale tailnet — e.g. the agent is behind
+double NAT (a router in *router* mode inside a larger LAN) where you can't port
+forward — a Cloudflare Tunnel reaches it without any inbound network changes.
+`cloudflared` dials **outbound** to Cloudflare's edge, so it works through NAT
+and firewalls the same way a browser does.
+
+**One-time:** install `cloudflared`
+(`brew install cloudflared` / `winget install --id Cloudflare.cloudflared` /
+[other platforms](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/)).
+
+**Each session**, with the agent already running:
+
+```bash
+npm run tunnel
+```
+
+It prints a line like `https://random-words.trycloudflare.com`. Put that
+hostname in the client's **Tunnel host** field (scheme and trailing slash are
+optional — `random-words.trycloudflare.com` is enough), then Connect. The secret
+still gates the connection.
+
+> ℹ️ Quick tunnels get a **new random URL every run**. For a stable hostname,
+> set up a [named tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/get-started/create-remote-tunnel/)
+> with your own Cloudflare domain and point its ingress at
+> `https://localhost:8443` with `noTLSVerify: true`.
+
+> ⚠️ A tunnel makes the agent reachable by **anyone who has the URL** (only the
+> shared secret stops them). For a control tool this is a real exposure surface —
+> keep the secret strong, stop the tunnel (`Ctrl+C`) when you're done, and for
+> anything beyond personal use put [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/policies/access/)
+> in front of it.
+
 ## Security model (Basic tier)
 
-- TLS (`wss://`) on all connections; the agent's self-signed cert is pinned by
-  fingerprint. Verify the fingerprint on first connect.
+- TLS (`wss://`) on all connections.
+  - **LAN / Tailscale:** the agent's self-signed cert is pinned by fingerprint —
+    verify the printed SHA-256 on first connect.
+  - **Cloudflare Tunnel:** Cloudflare terminates TLS with its own trusted cert,
+    so fingerprint pinning does not apply on that path; the shared secret is the
+    gate, and traffic is re-encrypted from Cloudflare's edge to the agent.
 - A shared secret gates every connection; one controller at a time.
 - The agent binds LAN/Tailscale interfaces only — never a public internet socket.
+  A tunnel does not change this: `cloudflared` connects to the agent locally and
+  makes the outbound edge connection itself.
 - Not included by design: audit logging, remote session revocation, brute-force
-  rate limiting. Fine for personal use; harden before any multi-user use.
+  rate limiting. Fine for personal use; harden before any multi-user use, and
+  prefer Tailscale or Cloudflare Access over a bare quick tunnel.
 
 ## Development
 

@@ -52,9 +52,13 @@ test("parses agent-side messages", () => {
 });
 
 test("setMode enforces interval bounds", () => {
+  // Below 4ms is rejected...
   assert.throws(() =>
-    ClientMessage.parse({ type: "setMode", mode: "video", intervalMs: 5 }),
+    ClientMessage.parse({ type: "setMode", mode: "video", intervalMs: 2 }),
   );
-  const ok = ClientMessage.parse({ type: "setMode", mode: "video", intervalMs: 50 });
-  assert.equal(ok.type, "setMode");
+  // ...but high-fps intervals (120fps≈8ms, 60fps≈17ms) must be accepted.
+  for (const intervalMs of [8, 17, 50]) {
+    const ok = ClientMessage.parse({ type: "setMode", mode: "video", intervalMs });
+    assert.equal(ok.type, "setMode");
+  }
 });
