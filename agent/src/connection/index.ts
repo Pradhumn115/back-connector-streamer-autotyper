@@ -27,6 +27,15 @@ export interface ServerDeps {
 
 const SCREENSHOT_INTERVAL = 2000;
 
+/** Minimal HTML escaping for the nickname shown on the cert-acceptance page. */
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
 /** Constant-time secret comparison to avoid leaking length/content via timing. */
 function secretsMatch(provided: string, expected: string): boolean {
   const a = Buffer.from(provided);
@@ -49,7 +58,27 @@ export class ConnectionServer {
   constructor(private readonly deps: ServerDeps) {}
 
   listen(): Promise<void> {
-    this.https = createServer({ cert: this.deps.tls.cert, key: this.deps.tls.key });
+    // A minimal request handler is essential: browsers refuse a wss:// connection
+    // to an untrusted self-signed cert until the user has accepted it, and the
+    // only way to accept it is to load https://<agent>:<port> in a tab. Without
+    // a handler that request hangs with no response, so the cert never gets
+    // trusted and the client can never connect. This page also serves as a
+    // reachability check ("if you see this, the client can reach the agent").
+    this.https = createServer(
+      { cert: this.deps.tls.cert, key: this.deps.tls.key },
+      (_req, res) => {
+        res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+        res.end(
+          `<!doctype html><meta charset="utf-8">` +
+            `<title>Back Connector agent</title>` +
+            `<body style="font-family:system-ui;max-width:32rem;margin:3rem auto;line-height:1.5">` +
+            `<h1>✅ Agent reachable</h1>` +
+            `<p>You've reached the <strong>${escapeHtml(this.deps.nickname)}</strong> agent and accepted its certificate.</p>` +
+            `<p>You can close this tab and press <strong>Connect</strong> in the client.</p>` +
+            `</body>`,
+        );
+      },
+    );
     this.wss = new WebSocketServer({ server: this.https });
     this.wss.on("connection", (ws) => this.onConnection(ws));
 
