@@ -1,7 +1,8 @@
 import { loadConfig } from "./config.js";
 import { loadOrCreateTls } from "./tls.js";
 import { localAddresses } from "./net.js";
-import { CaptureLoop, createScreenshotCapture } from "./capture/index.js";
+import { CaptureLoop, createScreenshotCapture, type ScreenCapture } from "./capture/index.js";
+import { FfmpegCapture, ffmpegAvailable } from "./capture/ffmpeg.js";
 import { InputController } from "./input/index.js";
 import { createNutBackend } from "./input/nutBackend.js";
 import { createNutTypingBackend } from "./autotyper/nutTyping.js";
@@ -19,7 +20,19 @@ async function main(): Promise<void> {
 
   const input = new InputController(await createNutBackend());
   const typingBackend = await createNutTypingBackend();
-  const capture = new CaptureLoop(createScreenshotCapture());
+
+  // Prefer the continuous ffmpeg pipeline (can sustain ~30fps); fall back to the
+  // per-frame screenshot loop (a few fps) when ffmpeg isn't installed.
+  const maxWidth = process.env.BCSA_MAX_WIDTH ? Number(process.env.BCSA_MAX_WIDTH) : 1440;
+  let capture: ScreenCapture;
+  let captureKind: string;
+  if (ffmpegAvailable()) {
+    capture = new FfmpegCapture({ maxWidth });
+    captureKind = `ffmpeg (up to 30fps, max width ${maxWidth}px)`;
+  } else {
+    capture = new CaptureLoop(createScreenshotCapture());
+    captureKind = "screenshot-desktop (install ffmpeg for higher fps)";
+  }
 
   // `server` is referenced by the lock manager's onChange (declared before it
   // exists), so use a holder the arrow can read once it's assigned.
@@ -42,7 +55,7 @@ async function main(): Promise<void> {
   });
 
   await server.listen();
-  printBanner(config.port, config.secret, tls.fingerprint);
+  printBanner(config.port, config.secret, tls.fingerprint, captureKind);
 
   // Optional agent-side toggle hotkey (Ctrl+Alt+L); no-ops if unavailable.
   const hotkey = await registerLockHotkey(() => void inputLock.toggle());
@@ -57,7 +70,12 @@ async function main(): Promise<void> {
   process.on("SIGTERM", () => void shutdown());
 }
 
-function printBanner(port: number, secret: string, fingerprint: string): void {
+function printBanner(
+  port: number,
+  secret: string,
+  fingerprint: string,
+  captureKind: string,
+): void {
   const { lan, tailscale } = localAddresses();
   const lines: string[] = [];
   lines.push("");
@@ -66,6 +84,7 @@ function printBanner(port: number, secret: string, fingerprint: string): void {
   lines.push(`  Port:        ${port}`);
   lines.push(`  Secret:      ${secret}`);
   lines.push(`  Cert SHA-256:${fingerprint}`);
+  lines.push(`  Capture:     ${captureKind}`);
   lines.push("");
   lines.push("  Connect from the client using one of:");
   for (const ip of lan) lines.push(`    LAN:       ${ip}:${port}`);

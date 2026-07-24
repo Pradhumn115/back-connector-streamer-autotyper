@@ -27,7 +27,7 @@ interface ScreenViewProps {
 // Interval used for each mode (matches guidance in the protocol notes).
 export const MODE_INTERVAL_MS: Record<StreamMode, number> = {
   screenshot: 2000,
-  video: 50,
+  video: 33, // ~30fps target (needs ffmpeg on the agent; else capped lower)
 };
 
 /**

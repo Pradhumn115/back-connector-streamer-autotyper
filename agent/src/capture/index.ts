@@ -11,12 +11,23 @@ export type CaptureFn = () => Promise<CapturedImage>;
 export type FrameHandler = (image: CapturedImage) => void;
 
 /**
+ * Common shape for a screen-capture source so the server can use either the
+ * per-frame screenshot loop or the continuous ffmpeg pipeline interchangeably.
+ */
+export interface ScreenCapture {
+  start(handler: FrameHandler): void;
+  /** Set the desired cadence; interpreted as an interval (ms) between frames. */
+  setInterval(ms: number): void;
+  stop(): void;
+}
+
+/**
  * Repeatedly captures the screen at a configurable interval and hands each
  * frame to a callback. Uses a self-scheduling timer (not setInterval) so a slow
  * capture never overlaps or piles up: the next capture is scheduled only after
  * the previous one finishes.
  */
-export class CaptureLoop {
+export class CaptureLoop implements ScreenCapture {
   private intervalMs: number;
   private timer: NodeJS.Timeout | null = null;
   private running = false;

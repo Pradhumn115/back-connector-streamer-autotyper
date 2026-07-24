@@ -9,7 +9,7 @@ import {
   type AgentMessage,
   type AutotypeProfile,
 } from "@bcsa/shared";
-import type { CaptureLoop } from "../capture/index.js";
+import type { ScreenCapture } from "../capture/index.js";
 import type { InputController } from "../input/index.js";
 import { runAutotype, type TypingBackend } from "../autotyper/index.js";
 import type { InputLockManager } from "../inputlock/index.js";
@@ -22,7 +22,7 @@ export interface ServerDeps {
   host?: string;
   tls: { cert: string; key: string };
   input: InputController;
-  capture: CaptureLoop;
+  capture: ScreenCapture;
   typingBackend: TypingBackend;
   inputLock: InputLockManager;
 }
