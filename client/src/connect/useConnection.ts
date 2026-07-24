@@ -38,6 +38,8 @@ export interface AgentInfo {
   screenWidth: number;
   screenHeight: number;
   nickname: string;
+  /** Agent's detected display refresh rate (Hz), if reported. */
+  refreshHz?: number;
 }
 
 /** The latest frame, exposed as an object URL ready to draw. */
@@ -224,6 +226,7 @@ export function useConnection(): UseConnection {
           screenWidth: msg.screenWidth,
           screenHeight: msg.screenHeight,
           nickname: msg.nickname,
+          refreshHz: msg.refreshHz,
         });
         break;
       case "autotypeProgress":

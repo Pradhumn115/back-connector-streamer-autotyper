@@ -72,6 +72,7 @@ async function startServer(secret: string, recorded: string[]) {
     capture: fakeCapture(),
     typingBackend: fakeTyping(),
     inputLock: fakeInputLock(),
+    refreshHz: 60,
   });
   await server.listen();
   return server;

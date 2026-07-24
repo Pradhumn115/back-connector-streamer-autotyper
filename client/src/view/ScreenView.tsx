@@ -22,15 +22,25 @@ interface ScreenViewProps {
   canvasRef: React.RefObject<HTMLCanvasElement>;
   /** Written on each draw with the current letterbox rectangle. */
   contentRectRef: React.MutableRefObject<ContentRect>;
+  /** Agent's detected display refresh rate, for the auto fps target readout. */
+  refreshHz?: number;
 }
 
 // Interval used for each mode (matches guidance in the protocol notes).
-export const MODE_INTERVAL_MS: Record<StreamMode, number> = {
-  screenshot: 2000,
-  // ~60fps target (needs ffmpeg on the agent; real rate is capped by the
-  // agent's display refresh and available bandwidth).
-  video: 16,
-};
+export const SCREENSHOT_INTERVAL_MS = 2000;
+/** Our ceiling for auto fps, matching the agent's ffmpeg cap. */
+export const MAX_FPS = 120;
+
+/**
+ * Interval (ms) to request for a mode. Video auto-targets the agent's display
+ * refresh rate (so you get whatever your screen can actually show), clamped to
+ * MAX_FPS; falls back to 60fps if the refresh rate is unknown.
+ */
+export function intervalForMode(mode: StreamMode, refreshHz?: number): number {
+  if (mode === "screenshot") return SCREENSHOT_INTERVAL_MS;
+  const fps = Math.min(MAX_FPS, Math.max(1, Math.round(refreshHz ?? 60)));
+  return Math.round(1000 / fps);
+}
 
 /**
  * Draws the latest frame into a canvas, scaled to fit the canvas while
@@ -43,7 +53,9 @@ export function ScreenView({
   onSetMode,
   canvasRef,
   contentRectRef,
+  refreshHz,
 }: ScreenViewProps) {
+  const targetFps = Math.min(MAX_FPS, Math.max(1, Math.round(refreshHz ?? 60)));
   const [fps, setFps] = useState<number>(0);
   const frameTimesRef = useRef<number[]>([]);
   const lastSeqRef = useRef<number>(-1);
@@ -130,6 +142,11 @@ export function ScreenView({
           <span>
             fps <b>{fps.toFixed(1)}</b>
           </span>
+          {mode === "video" && (
+            <span>
+              target <b>{targetFps}</b>
+            </span>
+          )}
           {frame && (
             <span>
               seq <b>{frame.seq}</b>

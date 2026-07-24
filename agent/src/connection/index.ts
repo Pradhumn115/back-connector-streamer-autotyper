@@ -25,6 +25,8 @@ export interface ServerDeps {
   capture: ScreenCapture;
   typingBackend: TypingBackend;
   inputLock: InputLockManager;
+  /** Detected display refresh rate (Hz), reported to the client for fps target. */
+  refreshHz: number;
 }
 
 const SCREENSHOT_INTERVAL = 2000;
@@ -177,6 +179,7 @@ export class ConnectionServer {
         screenWidth: width,
         screenHeight: height,
         nickname: this.deps.nickname,
+        refreshHz: this.deps.refreshHz,
       });
     } catch (err) {
       this.send(ws, { type: "agentError", message: `screen size: ${String(err)}` });

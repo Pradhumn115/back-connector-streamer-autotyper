@@ -13,7 +13,27 @@
 // Prints "READY" on stdout once the tap is active.
 
 import CoreGraphics
+import CoreVideo
 import Foundation
+
+// `bcsa-inputlock-mac refresh` prints the main display's refresh rate (Hz) and
+// exits — used by the agent to auto-target the streaming frame rate. Uses
+// CVDisplayLink, which reports the true rate even for built-in Apple displays
+// (CGDisplayModeGetRefreshRate returns 0 for those).
+if CommandLine.arguments.contains("refresh") {
+  var link: CVDisplayLink?
+  CVDisplayLinkCreateWithCGDisplay(CGMainDisplayID(), &link)
+  if let link = link {
+    let period = CVDisplayLinkGetNominalOutputVideoRefreshPeriod(link)
+    let indefinite = (period.flags & CVTimeFlags.isIndefinite.rawValue) != 0
+    if !indefinite, period.timeValue != 0 {
+      let hz = Double(period.timeScale) / Double(period.timeValue)
+      print(Int(hz.rounded()))
+      exit(0)
+    }
+  }
+  exit(1) // couldn't determine; caller falls back
+}
 
 let eventMask: CGEventMask =
     (1 << CGEventType.keyDown.rawValue) |

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { StreamMode } from "@bcsa/shared";
 import { useConnection } from "./connect/useConnection";
 import { useRemoteControl } from "./control/useRemoteControl";
-import { ScreenView, MODE_INTERVAL_MS, type ContentRect } from "./view/ScreenView";
+import { ScreenView, intervalForMode, type ContentRect } from "./view/ScreenView";
 import { AutotypePanel } from "./autotype-panel/AutotypePanel";
 
 export function App() {
@@ -27,10 +27,12 @@ export function App() {
 
   const connected = conn.status === "connected";
 
+  const refreshHz = conn.agentInfo?.refreshHz;
+
   // On (re)connect, tell the agent the current mode so streaming starts.
   useEffect(() => {
     if (connected) {
-      conn.send({ type: "setMode", mode, intervalMs: MODE_INTERVAL_MS[mode] });
+      conn.send({ type: "setMode", mode, intervalMs: intervalForMode(mode, refreshHz) });
     }
     // Only fire on transition into connected; mode changes are handled by
     // onSetMode which sends its own setMode.
@@ -48,7 +50,7 @@ export function App() {
 
   const onSetMode = (next: StreamMode) => {
     setMode(next);
-    conn.send({ type: "setMode", mode: next, intervalMs: MODE_INTERVAL_MS[next] });
+    conn.send({ type: "setMode", mode: next, intervalMs: intervalForMode(next, refreshHz) });
   };
 
   const statusText = (() => {
@@ -167,6 +169,7 @@ export function App() {
             onSetMode={onSetMode}
             canvasRef={canvasRef}
             contentRectRef={contentRectRef}
+            refreshHz={refreshHz}
           />
         </main>
 

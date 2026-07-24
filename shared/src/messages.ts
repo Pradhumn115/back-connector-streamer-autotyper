@@ -94,6 +94,8 @@ export const AgentInfoMessage = z.object({
   screenWidth: z.number().int().positive(),
   screenHeight: z.number().int().positive(),
   nickname: z.string(),
+  /** Detected display refresh rate (Hz); the client uses it to target fps. */
+  refreshHz: z.number().positive().optional(),
 });
 
 export const AutotypeProgressMessage = z.object({

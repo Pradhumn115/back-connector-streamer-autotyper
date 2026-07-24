@@ -3,6 +3,7 @@ import { loadOrCreateTls } from "./tls.js";
 import { localAddresses } from "./net.js";
 import { CaptureLoop, createScreenshotCapture, type ScreenCapture } from "./capture/index.js";
 import { FfmpegCapture, ffmpegAvailable } from "./capture/ffmpeg.js";
+import { detectRefreshHz } from "./display.js";
 import { InputController } from "./input/index.js";
 import { createNutBackend } from "./input/nutBackend.js";
 import { createNutTypingBackend } from "./autotyper/nutTyping.js";
@@ -24,11 +25,12 @@ async function main(): Promise<void> {
   // Prefer the continuous ffmpeg pipeline (can sustain ~30fps); fall back to the
   // per-frame screenshot loop (a few fps) when ffmpeg isn't installed.
   const maxWidth = process.env.BCSA_MAX_WIDTH ? Number(process.env.BCSA_MAX_WIDTH) : 1440;
+  const refreshHz = detectRefreshHz();
   let capture: ScreenCapture;
   let captureKind: string;
   if (ffmpegAvailable()) {
     capture = new FfmpegCapture({ maxWidth });
-    captureKind = `ffmpeg (up to 30fps, max width ${maxWidth}px)`;
+    captureKind = `ffmpeg (targets display refresh ~${refreshHz}fps, max width ${maxWidth}px)`;
   } else {
     capture = new CaptureLoop(createScreenshotCapture());
     captureKind = "screenshot-desktop (install ffmpeg for higher fps)";
@@ -52,6 +54,7 @@ async function main(): Promise<void> {
     capture,
     typingBackend,
     inputLock,
+    refreshHz,
   });
 
   await server.listen();
