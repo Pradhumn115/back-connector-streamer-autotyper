@@ -1,6 +1,13 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { existsSync } from "node:fs";
 import { platform } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { InputLockBackend } from "./index.js";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+// agent/{src,dist}/inputlock -> agent/native/bin
+const MAC_HELPER = join(__dirname, "..", "..", "native", "bin", "bcsa-inputlock-mac");
 
 /**
  * A backend for OSes where blocking isn't implemented yet. It reports
@@ -64,10 +71,66 @@ class WindowsBlockInputBackend implements InputLockBackend {
   }
 }
 
+/**
+ * macOS backend using a compiled Swift helper that installs a CGEventTap. The
+ * tap suppresses physical HID input while letting injected (nut-js) events
+ * through. The tap lives only while the helper process runs, so killing it — or
+ * any crash — instantly restores input. Requires Accessibility permission; if
+ * the helper can't create the tap it exits before "READY" and lock() rejects.
+ */
+class MacEventTapBackend implements InputLockBackend {
+  readonly supported: boolean;
+  private child: ChildProcess | null = null;
+
+  constructor() {
+    // Only advertise support if the helper binary was actually built.
+    this.supported = existsSync(MAC_HELPER);
+  }
+
+  async lock(): Promise<void> {
+    if (this.child) return;
+    const child = spawn(MAC_HELPER, [], { stdio: ["ignore", "pipe", "pipe"] });
+    this.child = child;
+    child.on("exit", () => {
+      if (this.child === child) this.child = null;
+    });
+
+    // Wait for the helper to confirm the tap is active (or fail).
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("input-lock helper timed out")), 3000);
+      child.stdout?.on("data", (d: Buffer) => {
+        if (d.toString().includes("READY")) {
+          clearTimeout(timer);
+          resolve();
+        }
+      });
+      child.on("exit", (code) => {
+        clearTimeout(timer);
+        reject(new Error(`input-lock helper exited (${code}); grant Accessibility permission`));
+      });
+      child.on("error", (err) => {
+        clearTimeout(timer);
+        reject(err);
+      });
+    });
+  }
+
+  async unlock(): Promise<void> {
+    if (!this.child) return;
+    this.child.kill(); // process exit removes the tap -> input restored
+    this.child = null;
+  }
+}
+
 /** Pick the input-lock backend appropriate for the current OS. */
 export function createInputLockBackend(): InputLockBackend {
-  if (platform() === "win32") return new WindowsBlockInputBackend();
-  // macOS (CGEventTap) and Linux (EVIOCGRAB) require a native addon; not yet
-  // implemented, so we honestly report unsupported.
-  return new UnsupportedBackend();
+  switch (platform()) {
+    case "win32":
+      return new WindowsBlockInputBackend();
+    case "darwin":
+      return new MacEventTapBackend();
+    default:
+      // Linux (EVIOCGRAB) not implemented yet; report unsupported honestly.
+      return new UnsupportedBackend();
+  }
 }

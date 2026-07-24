@@ -4,3 +4,6 @@ dist/
 .DS_Store
 agent/.data/
 *.local
+
+# native build artifacts (compiled per-machine)
+agent/native/bin/
