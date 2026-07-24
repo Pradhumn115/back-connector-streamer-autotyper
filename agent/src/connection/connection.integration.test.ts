@@ -15,6 +15,7 @@ import { ConnectionServer } from "./index.js";
 import { CaptureLoop, type CapturedImage } from "../capture/index.js";
 import { InputController, type InputBackend } from "../input/index.js";
 import type { TypingBackend } from "../autotyper/index.js";
+import { InputLockManager } from "../inputlock/index.js";
 
 function ephemeralTls(): { cert: string; key: string } {
   const pems = selfsigned.generate([{ name: "commonName", value: "test" }], {
@@ -52,6 +53,14 @@ function fakeTyping(): TypingBackend {
   return { async typeChar() {}, async backspace() {} };
 }
 
+function fakeInputLock(): InputLockManager {
+  return new InputLockManager({
+    backend: { supported: false, async lock() {}, async unlock() {} },
+    autoReleaseMs: 10_000,
+    onChange: () => {},
+  });
+}
+
 async function startServer(secret: string, recorded: string[]) {
   const server = new ConnectionServer({
     secret,
@@ -62,6 +71,7 @@ async function startServer(secret: string, recorded: string[]) {
     input: fakeInput(recorded),
     capture: fakeCapture(),
     typingBackend: fakeTyping(),
+    inputLock: fakeInputLock(),
   });
   await server.listen();
   return server;

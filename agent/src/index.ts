@@ -6,6 +6,12 @@ import { InputController } from "./input/index.js";
 import { createNutBackend } from "./input/nutBackend.js";
 import { createNutTypingBackend } from "./autotyper/nutTyping.js";
 import { ConnectionServer } from "./connection/index.js";
+import { InputLockManager } from "./inputlock/index.js";
+import { createInputLockBackend } from "./inputlock/backends.js";
+import { registerLockHotkey } from "./inputlock/hotkey.js";
+
+// Auto-release the input lock after this long without client activity.
+const INPUT_LOCK_AUTO_RELEASE_MS = 10_000;
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -15,7 +21,16 @@ async function main(): Promise<void> {
   const typingBackend = await createNutTypingBackend();
   const capture = new CaptureLoop(createScreenshotCapture());
 
-  const server = new ConnectionServer({
+  // `server` is referenced by the lock manager's onChange (declared before it
+  // exists), so use a holder the arrow can read once it's assigned.
+  let server: ConnectionServer;
+  const inputLock = new InputLockManager({
+    backend: createInputLockBackend(),
+    autoReleaseMs: INPUT_LOCK_AUTO_RELEASE_MS,
+    onChange: (locked) => server?.notifyLockState(locked),
+  });
+
+  server = new ConnectionServer({
     secret: config.secret,
     nickname: config.nickname,
     port: config.port,
@@ -23,13 +38,18 @@ async function main(): Promise<void> {
     input,
     capture,
     typingBackend,
+    inputLock,
   });
 
   await server.listen();
   printBanner(config.port, config.secret, tls.fingerprint);
 
+  // Optional agent-side toggle hotkey (Ctrl+Alt+L); no-ops if unavailable.
+  const hotkey = await registerLockHotkey(() => void inputLock.toggle());
+
   const shutdown = async (): Promise<void> => {
     process.stdout.write("\nShutting down…\n");
+    hotkey.stop();
     await server.close();
     process.exit(0);
   };

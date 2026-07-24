@@ -20,6 +20,9 @@
     "selfsigned": "^2.4.1",
     "ws": "^8.18.0"
   },
+  "optionalDependencies": {
+    "uiohook-napi": "^1.5.4"
+  },
   "devDependencies": {
     "@types/node": "^22.9.0",
     "@types/ws": "^8.5.13",

@@ -48,11 +48,18 @@ export interface AutotypeStatus {
   active: boolean;
 }
 
+export interface InputLockStatus {
+  locked: boolean;
+  /** Whether the agent's OS supports blocking local input at all. */
+  supported: boolean;
+}
+
 export interface UseConnection {
   status: ConnectionStatus;
   agentInfo: AgentInfo | null;
   latestFrame: LatestFrame | null;
   autotype: AutotypeStatus;
+  inputLock: InputLockStatus;
   lastError: string | null;
   params: ConnectParams;
   connect: (params: ConnectParams) => void;
@@ -124,6 +131,10 @@ export function useConnection(): UseConnection {
     done: 0,
     total: 0,
     active: false,
+  });
+  const [inputLock, setInputLock] = useState<InputLockStatus>({
+    locked: false,
+    supported: false,
   });
   const [lastError, setLastError] = useState<string | null>(null);
   const [params, setParams] = useState<ConnectParams>(loadParams);
@@ -202,6 +213,9 @@ export function useConnection(): UseConnection {
         break;
       case "autotypeDone":
         setAutotype((s) => ({ done: s.total, total: s.total, active: false }));
+        break;
+      case "inputLockState":
+        setInputLock({ locked: msg.locked, supported: msg.supported });
         break;
       case "agentError":
         setLastError(msg.message);
@@ -357,6 +371,7 @@ export function useConnection(): UseConnection {
     setLatestFrame(null);
     setAgentInfo(null);
     setAutotype({ done: 0, total: 0, active: false });
+    setInputLock({ locked: false, supported: false });
     setStatus("idle");
   }, [clearTimers, revokeCurrentUrl]);
 
@@ -381,6 +396,7 @@ export function useConnection(): UseConnection {
       setLatestFrame(null);
       setAgentInfo(null);
       setAutotype({ done: 0, total: 0, active: false });
+      setInputLock({ locked: false, supported: false });
       setLastError(null);
 
       paramsRef.current = next;
@@ -425,6 +441,7 @@ export function useConnection(): UseConnection {
     agentInfo,
     latestFrame,
     autotype,
+    inputLock,
     lastError,
     params,
     connect,

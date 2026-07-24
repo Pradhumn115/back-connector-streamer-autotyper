@@ -12,6 +12,7 @@ import {
 import type { CaptureLoop } from "../capture/index.js";
 import type { InputController } from "../input/index.js";
 import { runAutotype, type TypingBackend } from "../autotyper/index.js";
+import type { InputLockManager } from "../inputlock/index.js";
 
 export interface ServerDeps {
   secret: string;
@@ -23,6 +24,7 @@ export interface ServerDeps {
   input: InputController;
   capture: CaptureLoop;
   typingBackend: TypingBackend;
+  inputLock: InputLockManager;
 }
 
 const SCREENSHOT_INTERVAL = 2000;
@@ -95,6 +97,7 @@ export class ConnectionServer {
 
   async close(): Promise<void> {
     this.deps.capture.stop();
+    await this.deps.inputLock.unlock();
     this.controller?.close();
     await new Promise<void>((resolve) => {
       if (!this.wss) return resolve();
@@ -155,6 +158,8 @@ export class ConnectionServer {
         this.controller = null;
         this.autotyping = false;
         this.deps.capture.stop();
+        // Safety: never leave the agent's input locked with no controller.
+        void this.deps.inputLock.unlock();
       }
     });
 
@@ -177,6 +182,13 @@ export class ConnectionServer {
       this.send(ws, { type: "agentError", message: `screen size: ${String(err)}` });
     }
 
+    // Tell the client whether input-lock is available and its current state.
+    this.send(ws, {
+      type: "inputLockState",
+      locked: this.deps.inputLock.isLocked,
+      supported: this.deps.inputLock.supported,
+    });
+
     this.deps.capture.setInterval(SCREENSHOT_INTERVAL);
     this.deps.capture.start((image) => {
       if (this.controller?.readyState === this.controller?.OPEN) {
@@ -196,19 +208,56 @@ export class ConnectionServer {
           this.deps.capture.setInterval(msg.intervalMs);
           break;
         case "mouse":
+          this.deps.inputLock.noteClientActivity();
           await this.deps.input.applyMouse(msg);
           break;
         case "key":
+          this.deps.inputLock.noteClientActivity();
           await this.deps.input.applyKey(msg);
           break;
         case "autotype":
+          this.deps.inputLock.noteClientActivity();
           await this.handleAutotype(ws, msg.text, msg.profile);
+          break;
+        case "setInputLock":
+          await this.handleSetInputLock(ws, msg.locked);
           break;
         case "auth":
           break; // already authenticated; ignore duplicate
       }
     } catch (err) {
       this.send(ws, { type: "agentError", message: String(err) });
+    }
+  }
+
+  private async handleSetInputLock(ws: WebSocket, locked: boolean): Promise<void> {
+    if (locked && !this.deps.inputLock.supported) {
+      this.send(ws, {
+        type: "agentError",
+        message: "local input lock is not supported on this agent's OS yet",
+      });
+      this.send(ws, { type: "inputLockState", locked: false, supported: false });
+      return;
+    }
+    if (locked) await this.deps.inputLock.lock();
+    else await this.deps.inputLock.unlock();
+    // State is also broadcast via notifyLockState (manager onChange), but reply
+    // here too so a no-op request still gets an authoritative answer.
+    this.send(ws, {
+      type: "inputLockState",
+      locked: this.deps.inputLock.isLocked,
+      supported: this.deps.inputLock.supported,
+    });
+  }
+
+  /** Push the current lock state to the connected controller, if any. */
+  notifyLockState(locked: boolean): void {
+    if (this.controller) {
+      this.send(this.controller, {
+        type: "inputLockState",
+        locked,
+        supported: this.deps.inputLock.supported,
+      });
     }
   }
 

@@ -144,6 +144,27 @@ export function App() {
               </p>
             </div>
 
+            <div className="control-toggle">
+              <label>
+                <input
+                  type="checkbox"
+                  checked={conn.inputLock.locked}
+                  onChange={(e) =>
+                    conn.send({ type: "setInputLock", locked: e.target.checked })
+                  }
+                  disabled={!connected || !conn.inputLock.supported}
+                />
+                Lock agent's local input
+              </label>
+              <p className="hint">
+                {connected && !conn.inputLock.supported
+                  ? "Not supported on this agent's OS yet (Windows only for now)."
+                  : conn.inputLock.locked
+                    ? "The agent's physical keyboard/mouse are blocked. Auto-releases after 10s of no activity, or when you disconnect."
+                    : "Blocks the person at the agent from interfering. Only their physical input is blocked — yours still works."}
+              </p>
+            </div>
+
             <AutotypePanel
               send={conn.send}
               autotype={conn.autotype}

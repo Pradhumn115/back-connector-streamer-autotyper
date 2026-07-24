@@ -71,6 +71,16 @@ export const AutotypeMessage = z.object({
   }),
 });
 
+/**
+ * Ask the agent to lock (or unlock) the physical keyboard + mouse at the agent
+ * machine, so only the client controls it. The agent auto-releases the lock
+ * after a period of no client activity, and unlocks if the client disconnects.
+ */
+export const SetInputLockMessage = z.object({
+  type: z.literal("setInputLock"),
+  locked: z.boolean(),
+});
+
 // ---- agent -> client ----
 
 export const AuthResultMessage = z.object({
@@ -101,6 +111,17 @@ export const AgentErrorMessage = z.object({
   message: z.string(),
 });
 
+/**
+ * Reports the agent's local-input lock state. `supported` is false on agent OSes
+ * where physical-input blocking isn't implemented, so the client can disable the
+ * control and never show a false "locked" state.
+ */
+export const InputLockStateMessage = z.object({
+  type: z.literal("inputLockState"),
+  locked: z.boolean(),
+  supported: z.boolean(),
+});
+
 // ---- unions ----
 
 export const ClientMessage = z.discriminatedUnion("type", [
@@ -109,6 +130,7 @@ export const ClientMessage = z.discriminatedUnion("type", [
   MouseMessage,
   KeyMessage,
   AutotypeMessage,
+  SetInputLockMessage,
 ]);
 export type ClientMessage = z.infer<typeof ClientMessage>;
 
@@ -118,6 +140,7 @@ export const AgentMessage = z.discriminatedUnion("type", [
   AutotypeProgressMessage,
   AutotypeDoneMessage,
   AgentErrorMessage,
+  InputLockStateMessage,
 ]);
 export type AgentMessage = z.infer<typeof AgentMessage>;
 

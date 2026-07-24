@@ -82,6 +82,28 @@ Then:
   agent. Toggle it off to release control.
 - **Autotype:** paste text, tune the human-likeness (base delay, jitter, typo
   rate), and click *Type it*.
+- **Lock agent's local input:** blocks the physical keyboard/mouse at the agent
+  so only you (the client) drive it. See below.
+
+## Locking the agent's local input
+
+The client has a **"Lock agent's local input"** toggle. When on, the person
+sitting at the agent machine can't interfere — only synthetic input from the
+client gets through. The agent can also toggle it with the **Ctrl+Alt+L** hotkey
+(when the optional `uiohook-napi` module is installed).
+
+**You can never get permanently locked out.** The lock releases when any of these
+happen:
+- ~10 seconds pass with no client input (auto-release watchdog), or
+- you toggle it off / disconnect the client, or
+- the agent process exits.
+On Windows, **Ctrl+Alt+Del** always bypasses the block as a final failsafe.
+
+**OS support:** Real blocking is implemented on **Windows** (via the Win32
+`BlockInput` API — no native build needed). On **macOS and Linux** it is **not
+implemented yet**, so the agent reports the feature as unsupported and the client
+disables the toggle — it never shows a false "locked" state. (Adding it needs a
+native `CGEventTap` on macOS / `EVIOCGRAB` on Linux.)
 
 ## Security model (Basic tier)
 
