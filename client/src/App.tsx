@@ -2,12 +2,15 @@ import { useEffect, useRef, useState } from "react";
 import type { StreamMode } from "@bcsa/shared";
 import { useConnection } from "./connect/useConnection";
 import { useRemoteControl } from "./control/useRemoteControl";
-import { ScreenView, MODE_INTERVAL_MS } from "./view/ScreenView";
+import { ScreenView, MODE_INTERVAL_MS, type ContentRect } from "./view/ScreenView";
 import { AutotypePanel } from "./autotype-panel/AutotypePanel";
 
 export function App() {
   const conn = useConnection();
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  // The letterbox rectangle the frame occupies inside the canvas, shared between
+  // the view (which computes it) and the control layer (which maps clicks with it).
+  const contentRectRef = useRef<ContentRect>({ dx: 0, dy: 0, dw: 0, dh: 0 });
 
   // Connect-bar form fields, seeded from cached params.
   const [lan, setLan] = useState<string>(conn.params.lanAddress);
@@ -19,7 +22,7 @@ export function App() {
   const [panelOpen, setPanelOpen] = useState<boolean>(true);
 
   // Wire mouse/keyboard to the canvas; gated by the control toggle.
-  useRemoteControl(canvasRef, conn.send, controlEnabled);
+  useRemoteControl(canvasRef, contentRectRef, conn.send, controlEnabled);
 
   const connected = conn.status === "connected";
 
@@ -119,6 +122,7 @@ export function App() {
             controlEnabled={controlEnabled}
             onSetMode={onSetMode}
             canvasRef={canvasRef}
+            contentRectRef={contentRectRef}
           />
         </main>
 

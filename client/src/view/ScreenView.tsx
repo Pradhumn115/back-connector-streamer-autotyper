@@ -2,12 +2,26 @@ import { useEffect, useRef, useState } from "react";
 import type { StreamMode } from "@bcsa/shared";
 import type { LatestFrame } from "../connect/useConnection";
 
+/**
+ * The rectangle (in canvas/CSS pixels) the letterboxed frame actually occupies
+ * inside the canvas. Shared with the control layer so clicks map to the image,
+ * not the black bars around it.
+ */
+export interface ContentRect {
+  dx: number;
+  dy: number;
+  dw: number;
+  dh: number;
+}
+
 interface ScreenViewProps {
   frame: LatestFrame | null;
   mode: StreamMode;
   controlEnabled: boolean;
   onSetMode: (mode: StreamMode) => void;
   canvasRef: React.RefObject<HTMLCanvasElement>;
+  /** Written on each draw with the current letterbox rectangle. */
+  contentRectRef: React.MutableRefObject<ContentRect>;
 }
 
 // Interval used for each mode (matches guidance in the protocol notes).
@@ -26,6 +40,7 @@ export function ScreenView({
   controlEnabled,
   onSetMode,
   canvasRef,
+  contentRectRef,
 }: ScreenViewProps) {
   const [fps, setFps] = useState<number>(0);
   const frameTimesRef = useRef<number[]>([]);
@@ -71,6 +86,10 @@ export function ScreenView({
       const dx = (cw - dw) / 2;
       const dy = (ch - dh) / 2;
       ctx.drawImage(img, dx, dy, dw, dh);
+
+      // Publish the image rectangle so the control layer can map clicks onto
+      // the actual frame instead of the whole (letterboxed) canvas.
+      contentRectRef.current = { dx, dy, dw, dh };
 
       if (!revoked) {
         // The URL is owned by the connection hook, which revokes on replace;

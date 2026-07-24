@@ -1,5 +1,7 @@
 import { useEffect, useRef } from "react";
 import type { ClientMessage } from "@bcsa/shared";
+import type { ContentRect } from "../view/ScreenView";
+import { mapToNormalized } from "./mapCoords";
 
 type Modifier = "ctrl" | "alt" | "shift" | "meta";
 type SendFn = (msg: ClientMessage) => void;
@@ -29,20 +31,27 @@ function collectModifiers(e: KeyboardEvent): Modifier[] {
 
 /**
  * Convert a mouse event position into normalized 0..1 coordinates relative to
- * the canvas's rendered box (which fills the element the frame is drawn into).
+ * the *frame image* inside the canvas. The frame is letterboxed (centered, with
+ * black bars), so we map against the actual image rectangle published by
+ * ScreenView — not the whole canvas — otherwise clicks are offset and mis-scaled
+ * whenever the screen's aspect ratio differs from the canvas's.
  */
 function normalizedCoords(
   canvas: HTMLCanvasElement,
+  content: ContentRect,
   clientX: number,
   clientY: number,
 ): { x: number; y: number } {
   const rect = canvas.getBoundingClientRect();
-  const x = rect.width > 0 ? (clientX - rect.left) / rect.width : 0;
-  const y = rect.height > 0 ? (clientY - rect.top) / rect.height : 0;
-  return {
-    x: Math.min(1, Math.max(0, x)),
-    y: Math.min(1, Math.max(0, y)),
-  };
+  // The canvas backing store is sized 1:1 with its CSS box, and the content
+  // rect is in those same units, so we can offset directly by the CSS rect.
+  return mapToNormalized(
+    clientX - rect.left,
+    clientY - rect.top,
+    content,
+    rect.width,
+    rect.height,
+  );
 }
 
 /**
@@ -52,6 +61,7 @@ function normalizedCoords(
  */
 export function useRemoteControl(
   canvasRef: React.RefObject<HTMLCanvasElement>,
+  contentRectRef: React.MutableRefObject<ContentRect>,
   send: SendFn,
   enabled: boolean,
 ): void {
@@ -76,14 +86,14 @@ export function useRemoteControl(
       const now = performance.now();
       if (now - lastMoveRef.current < MOVE_INTERVAL_MS) return;
       lastMoveRef.current = now;
-      const { x, y } = normalizedCoords(canvas, e.clientX, e.clientY);
+      const { x, y } = normalizedCoords(canvas, contentRectRef.current, e.clientX, e.clientY);
       sendRef.current({ type: "mouse", action: "move", x, y });
     };
 
     const onMouseDown = (e: MouseEvent) => {
       if (!enabledRef.current) return;
       canvas.focus();
-      const { x, y } = normalizedCoords(canvas, e.clientX, e.clientY);
+      const { x, y } = normalizedCoords(canvas, contentRectRef.current, e.clientX, e.clientY);
       sendRef.current({
         type: "mouse",
         action: "down",
@@ -95,7 +105,7 @@ export function useRemoteControl(
 
     const onMouseUp = (e: MouseEvent) => {
       if (!enabledRef.current) return;
-      const { x, y } = normalizedCoords(canvas, e.clientX, e.clientY);
+      const { x, y } = normalizedCoords(canvas, contentRectRef.current, e.clientX, e.clientY);
       sendRef.current({
         type: "mouse",
         action: "up",
@@ -107,7 +117,7 @@ export function useRemoteControl(
 
     const onClick = (e: MouseEvent) => {
       if (!enabledRef.current) return;
-      const { x, y } = normalizedCoords(canvas, e.clientX, e.clientY);
+      const { x, y } = normalizedCoords(canvas, contentRectRef.current, e.clientX, e.clientY);
       sendRef.current({
         type: "mouse",
         action: "click",
@@ -121,7 +131,7 @@ export function useRemoteControl(
       if (!enabledRef.current) return;
       // Prevent the browser menu so right-click reaches the agent.
       e.preventDefault();
-      const { x, y } = normalizedCoords(canvas, e.clientX, e.clientY);
+      const { x, y } = normalizedCoords(canvas, contentRectRef.current, e.clientX, e.clientY);
       sendRef.current({
         type: "mouse",
         action: "click",
