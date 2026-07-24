@@ -1,0 +1,19 @@
+{
+  "name": "back-connector-streamer-autotyper",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Personal remote-control tool: stream a machine's screen and control its keyboard/mouse from a web client, with a human-like autotyper.",
+  "workspaces": [
+    "shared",
+    "agent",
+    "client"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace shared && npm run build --workspace agent && npm run build --workspace client",
+    "test": "npm run test --workspace shared && npm run test --workspace agent",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "agent": "npm run start --workspace agent",
+    "client": "npm run dev --workspace client"
+  },
+  "license": "MIT"
+}
