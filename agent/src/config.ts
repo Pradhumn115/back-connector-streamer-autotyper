@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -23,7 +23,9 @@ export interface AgentConfig {
 const DEFAULT_PORT = 8443;
 
 function ensureDataDir(): void {
-  if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
+  // Owner-only directory: it holds the shared secret and the TLS private key.
+  if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
+  else chmodSync(DATA_DIR, 0o700);
 }
 
 /**
@@ -37,13 +39,15 @@ export function loadConfig(): AgentConfig {
   let cfg: AgentConfig;
   if (existsSync(CONFIG_PATH)) {
     cfg = JSON.parse(readFileSync(CONFIG_PATH, "utf8")) as AgentConfig;
+    chmodSync(CONFIG_PATH, 0o600); // repair perms on pre-existing installs
   } else {
     cfg = {
-      secret: randomBytes(9).toString("base64url"), // ~12 char shared secret
+      // 24 bytes -> ~192 bits of entropy, 32 base64url chars.
+      secret: randomBytes(24).toString("base64url"),
       port: DEFAULT_PORT,
       nickname: hostname(),
     };
-    writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2));
+    writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2), { mode: 0o600 });
   }
 
   if (process.env.BCSA_PORT) cfg.port = Number(process.env.BCSA_PORT);

@@ -1,4 +1,5 @@
 import { createServer, type Server as HttpsServer } from "node:https";
+import { timingSafeEqual } from "node:crypto";
 import type { AddressInfo } from "node:net";
 import { WebSocketServer, type WebSocket } from "ws";
 import {
@@ -25,6 +26,14 @@ export interface ServerDeps {
 }
 
 const SCREENSHOT_INTERVAL = 2000;
+
+/** Constant-time secret comparison to avoid leaking length/content via timing. */
+function secretsMatch(provided: string, expected: string): boolean {
+  const a = Buffer.from(provided);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
+}
 
 /**
  * The agent's WSS server. Accepts a single authenticated controller at a time,
@@ -98,7 +107,7 @@ export class ConnectionServer {
           ws.close();
           return;
         }
-        if (msg.secret !== this.deps.secret) {
+        if (!secretsMatch(msg.secret, this.deps.secret)) {
           this.send(ws, { type: "authResult", ok: false, reason: "invalid secret" });
           ws.close();
           return;

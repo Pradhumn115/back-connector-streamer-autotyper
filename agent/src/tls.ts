@@ -1,5 +1,5 @@
 import { X509Certificate } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import selfsigned from "selfsigned";
 import { DATA_DIR } from "./config.js";
@@ -35,8 +35,12 @@ export function loadOrCreateTls(): TlsMaterial {
     });
     cert = pems.cert;
     key = pems.private;
-    writeFileSync(CERT_PATH, cert);
-    writeFileSync(KEY_PATH, key);
+    writeFileSync(CERT_PATH, cert, { mode: 0o600 });
+    writeFileSync(KEY_PATH, key, { mode: 0o600 }); // private key: owner-only
+  }
+
+  if (existsSync(KEY_PATH)) {
+    chmodSync(KEY_PATH, 0o600); // repair perms on pre-existing installs
   }
 
   return { cert, key, fingerprint: fingerprintOf(cert) };
