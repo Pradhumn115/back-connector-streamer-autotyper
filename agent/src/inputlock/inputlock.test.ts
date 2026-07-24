@@ -60,6 +60,28 @@ test("lock() then unlock() drives the backend and state", async () => {
   assert.deepEqual(changes, [true, false]);
 });
 
+test("a backend that fails to engage never reports as locked", async () => {
+  // Guards the Windows BlockInput case: if the backend can't actually block
+  // input (e.g. non-elevated, BlockInput refused), the manager must NOT mark
+  // itself locked or fire onChange(true) — a false lock is a security risk.
+  const changes: boolean[] = [];
+  const mgr = new InputLockManager({
+    backend: {
+      supported: true,
+      async lock() {
+        throw new Error("BlockInput was refused — run the agent as Administrator");
+      },
+      async unlock() {},
+    },
+    autoReleaseMs: 1000,
+    onChange: (l) => changes.push(l),
+  });
+
+  await assert.rejects(() => mgr.lock(), /BlockInput was refused/);
+  assert.equal(mgr.isLocked, false);
+  assert.deepEqual(changes, []); // onChange(true) was never fired
+});
+
 test("unsupported backend never locks", async () => {
   const mgr = new InputLockManager({
     backend: { supported: false, async lock() {}, async unlock() {} },

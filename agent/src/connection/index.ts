@@ -242,8 +242,21 @@ export class ConnectionServer {
       this.send(ws, { type: "inputLockState", locked: false, supported: false });
       return;
     }
-    if (locked) await this.deps.inputLock.lock();
-    else await this.deps.inputLock.unlock();
+    try {
+      if (locked) await this.deps.inputLock.lock();
+      else await this.deps.inputLock.unlock();
+    } catch (err) {
+      // Engaging the lock failed (e.g. Windows BlockInput refused because the
+      // agent isn't elevated). Report the reason AND the true state, so the
+      // client never shows a lock that isn't actually holding.
+      this.send(ws, { type: "agentError", message: String(err) });
+      this.send(ws, {
+        type: "inputLockState",
+        locked: this.deps.inputLock.isLocked,
+        supported: this.deps.inputLock.supported,
+      });
+      return;
+    }
     // State is also broadcast via notifyLockState (manager onChange), but reply
     // here too so a no-op request still gets an authoritative answer.
     this.send(ws, {

@@ -1,6 +1,7 @@
 import { loadConfig } from "./config.js";
 import { loadOrCreateTls } from "./tls.js";
 import { localAddresses } from "./net.js";
+import { isElevated } from "./inputlock/elevation.js";
 import { CaptureLoop, createScreenshotCapture, type ScreenCapture } from "./capture/index.js";
 import { FfmpegCapture, ffmpegAvailable } from "./capture/ffmpeg.js";
 import { detectRefreshHz } from "./display.js";
@@ -58,7 +59,7 @@ async function main(): Promise<void> {
   });
 
   await server.listen();
-  printBanner(config.port, config.secret, tls.fingerprint, captureKind);
+  printBanner(config.port, config.secret, tls.fingerprint, captureKind, isElevated());
 
   // Optional agent-side toggle hotkey (Ctrl+Alt+L); no-ops if unavailable.
   const hotkey = await registerLockHotkey(() => void inputLock.toggle());
@@ -78,6 +79,7 @@ function printBanner(
   secret: string,
   fingerprint: string,
   captureKind: string,
+  elevated: boolean,
 ): void {
   const { lan, tailscale } = localAddresses();
   const lines: string[] = [];
@@ -94,6 +96,15 @@ function printBanner(
   for (const ip of tailscale) lines.push(`    Tailscale: ${ip}:${port}`);
   if (lan.length === 0 && tailscale.length === 0) {
     lines.push("    (no LAN/Tailscale IPv4 address detected)");
+  }
+  // isElevated() only reports false on a non-elevated Windows agent, where
+  // BlockInput would be silently refused. Warn so the user isn't surprised when
+  // "Lock agent's local input" fails.
+  if (!elevated) {
+    lines.push("");
+    lines.push("  ⚠ Not running as Administrator — 'Lock agent's local input'");
+    lines.push("    will be refused by Windows. Restart this agent from a terminal");
+    lines.push("    opened with 'Run as administrator' to enable it.");
   }
   lines.push("");
   process.stdout.write(lines.join("\n") + "\n");

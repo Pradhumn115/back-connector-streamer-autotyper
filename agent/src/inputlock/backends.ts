@@ -34,6 +34,14 @@ class UnsupportedBackend implements InputLockBackend {
  * auto-restore-on-exit is itself a safety failsafe. Note: Ctrl+Alt+Del always
  * bypasses BlockInput (a Windows guarantee), giving the local user a final way
  * out.
+ *
+ * CRITICAL: BlockInput() is subject to UIPI / Mandatory Integrity Control — from
+ * a non-elevated (Medium integrity) process it returns FALSE and silently does
+ * nothing. So we do NOT assume success: the child reports "READY" on stdout only
+ * after BlockInput() actually returned true, and exits non-zero otherwise. lock()
+ * waits for that confirmation and rejects if it doesn't come, so the agent never
+ * reports a lock that isn't real (a false lock is a security risk — the user
+ * would trust a machine that's still open).
  */
 class WindowsBlockInputBackend implements InputLockBackend {
   readonly supported = true;
@@ -44,7 +52,9 @@ class WindowsBlockInputBackend implements InputLockBackend {
     const script = [
       "$sig = '[DllImport(\"user32.dll\")] public static extern bool BlockInput(bool f);';",
       "$t = Add-Type -MemberDefinition $sig -Name Native -Namespace Win32 -PassThru;",
-      "[void]$t::BlockInput($true);",
+      // Only report READY if BlockInput actually engaged; otherwise fail loudly.
+      "if ($t::BlockInput($true)) { Write-Output 'READY' }",
+      "else { Write-Output 'FAILED'; exit 1 }",
       // Stay alive holding the block until we're killed / stdin closes.
       "while ($true) { Start-Sleep -Seconds 3600 }",
     ].join(" ");
@@ -52,15 +62,46 @@ class WindowsBlockInputBackend implements InputLockBackend {
     const child = spawn(
       "powershell.exe",
       ["-NoProfile", "-NonInteractive", "-Command", script],
-      { stdio: "ignore", windowsHide: true },
+      { stdio: ["ignore", "pipe", "ignore"], windowsHide: true },
     );
-    child.on("error", () => {
-      this.child = null;
-    });
+    this.child = child;
     child.on("exit", () => {
       if (this.child === child) this.child = null;
     });
-    this.child = child;
+
+    // Wait for the child to confirm BlockInput succeeded (or fail/timeout).
+    await new Promise<void>((resolve, reject) => {
+      const fail = (message: string) => {
+        clearTimeout(timer);
+        if (this.child === child) this.child = null;
+        try {
+          child.kill();
+        } catch {
+          /* already gone */
+        }
+        reject(new Error(message));
+      };
+      const timer = setTimeout(() => fail("input lock timed out engaging"), 3000);
+      child.stdout?.on("data", (d: Buffer) => {
+        const out = d.toString();
+        if (out.includes("READY")) {
+          clearTimeout(timer);
+          resolve();
+        } else if (out.includes("FAILED")) {
+          fail(
+            "BlockInput was refused — run the agent as Administrator to lock local input",
+          );
+        }
+      });
+      child.on("exit", (code) =>
+        fail(
+          code === 0
+            ? "input lock process exited before engaging"
+            : "BlockInput was refused — run the agent as Administrator to lock local input",
+        ),
+      );
+      child.on("error", (err) => fail(String(err)));
+    });
   }
 
   async unlock(): Promise<void> {
