@@ -37,6 +37,7 @@ export const MouseMessage = z.object({
   dx: z.number().optional(),
   dy: z.number().optional(),
 });
+export type MouseMessage = z.infer<typeof MouseMessage>;
 
 export const KeyMessage = z.object({
   type: z.literal("key"),
@@ -48,6 +49,7 @@ export const KeyMessage = z.object({
     .optional()
     .default([]),
 });
+export type KeyMessage = z.infer<typeof KeyMessage>;
 
 export const AutotypeProfile = z.object({
   // average delay between keystrokes, ms
