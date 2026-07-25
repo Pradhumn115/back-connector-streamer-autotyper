@@ -201,6 +201,18 @@ silence or waits on audio that will never come.
 > (`docs/superpowers/specs/`) notes a VAD-based segmenter as the low-latency
 > improvement path.
 
+### Audio troubleshooting
+
+| Symptom | Cause & fix |
+|---|---|
+| **Toggle is greyed out** | No loopback device detected. Install it (`npm run setup`); on Windows reboot so the driver appears; then reconnect the client. |
+| **Captions stay blank while audio plays** | The loopback isn't receiving the audio. macOS: make sure the **Multi-Output Device** is the current *Output* (System Settings → Sound). Windows: set **CABLE Input** as the *Output* device. |
+| **macOS: still blank after routing** | Terminal lacks **Microphone** permission — grant it (Privacy & Security → Microphone) and restart the agent. |
+| **You can't hear anything anymore** | You routed audio into the loopback but not back to your speakers. macOS: the Multi-Output Device must include your speakers. Windows: enable **Listen to this device** on *CABLE Output* → your speakers. |
+| **Captions lag ~5 s** | Expected — v1 transcribes in 5 s windows. |
+| **First use is slow / "loading model"** | The ~50 MB Whisper model downloads once, then it's cached in the browser. |
+| **Wrong language / gibberish** | Whisper auto-detects language per window; very short or noisy clips transcribe poorly. |
+
 ## Remote access via Cloudflare Tunnel
 
 If both machines can't be on a Tailscale tailnet — e.g. the agent is behind
