@@ -543,6 +543,10 @@ input[type="range"]::-moz-range-thumb {
   background: rgba(255, 255, 255, 0.08);
   color: var(--muted);
 }
+.type-it.cancel {
+  background: linear-gradient(180deg, #ff7a7a, var(--danger));
+  color: #2a0808;
+}
 
 .progress {
   position: relative;

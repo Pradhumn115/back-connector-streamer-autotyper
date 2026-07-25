@@ -31,6 +31,8 @@ export function AutotypePanel({ send, autotype, disabled }: AutotypePanelProps) 
     });
   };
 
+  const onCancel = () => send({ type: "cancelAutotype" });
+
   const pct =
     autotype.total > 0
       ? Math.min(100, Math.round((autotype.done / autotype.total) * 100))
@@ -94,13 +96,19 @@ export function AutotypePanel({ send, autotype, disabled }: AutotypePanelProps) 
         />
       </div>
 
-      <button
-        className="type-it"
-        onClick={onTypeIt}
-        disabled={disabled || text.length === 0}
-      >
-        Type it
-      </button>
+      {autotype.active ? (
+        <button className="type-it cancel" onClick={onCancel}>
+          Cancel
+        </button>
+      ) : (
+        <button
+          className="type-it"
+          onClick={onTypeIt}
+          disabled={disabled || text.length === 0}
+        >
+          Type it
+        </button>
+      )}
 
       <div className="progress">
         <div className="progress-bar" style={{ width: `${pct}%` }} />

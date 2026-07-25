@@ -16,6 +16,8 @@ export interface AutotypeDeps {
   sleep?: (ms: number) => Promise<void>;
   /** Returns a float in [0, 1). Injectable for deterministic tests. */
   rng?: () => number;
+  /** Abort to stop typing mid-run (checked between keystrokes). */
+  signal?: AbortSignal;
 }
 
 const defaultSleep = (ms: number): Promise<void> =>
@@ -42,13 +44,17 @@ function pickTypo(ch: string, rng: () => number): string | null {
  * by `baseDelayMs` +/- a random amount up to `jitterMs`, and with probability
  * `typoRate` a wrong adjacent key is pressed first, then backspaced and
  * corrected. Progress is reported per character.
+ *
+ * Passing `deps.signal` allows cancelling mid-run: the loop stops before the
+ * next keystroke once the signal is aborted. Returns true if it completed the
+ * whole text, false if it was cancelled.
  */
 export async function runAutotype(
   text: string,
   profile: AutotypeProfile,
   deps: AutotypeDeps,
   hooks: AutotypeHooks = {},
-): Promise<void> {
+): Promise<boolean> {
   const sleep = deps.sleep ?? defaultSleep;
   const rng = deps.rng ?? Math.random;
   const total = text.length;
@@ -59,6 +65,7 @@ export async function runAutotype(
   };
 
   for (let i = 0; i < text.length; i++) {
+    if (deps.signal?.aborted) return false; // cancelled before this keystroke
     const ch = text[i];
 
     // Occasionally fumble: type an adjacent wrong key, then fix it.
@@ -77,4 +84,5 @@ export async function runAutotype(
 
     if (i < text.length - 1) await sleep(delay());
   }
+  return true;
 }

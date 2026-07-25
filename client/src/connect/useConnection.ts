@@ -233,7 +233,12 @@ export function useConnection(): UseConnection {
         setAutotype({ done: msg.done, total: msg.total, active: true });
         break;
       case "autotypeDone":
-        setAutotype((s) => ({ done: s.total, total: s.total, active: false }));
+        // On cancel, keep the bar where it stopped; on completion, fill it.
+        setAutotype((s) => ({
+          done: msg.cancelled ? s.done : s.total,
+          total: s.total,
+          active: false,
+        }));
         break;
       case "inputLockState":
         setInputLock({ locked: msg.locked, supported: msg.supported });

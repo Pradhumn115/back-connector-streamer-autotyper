@@ -58,6 +58,7 @@ export class ConnectionServer {
   private controller: WebSocket | null = null;
   private seq = 0;
   private autotyping = false;
+  private autotypeAbort: AbortController | null = null;
 
   constructor(private readonly deps: ServerDeps) {}
 
@@ -159,6 +160,7 @@ export class ConnectionServer {
       if (this.controller === ws) {
         this.controller = null;
         this.autotyping = false;
+        this.autotypeAbort?.abort(); // stop any in-progress autotype
         this.deps.capture.stop();
         // Safety: never leave the agent's input locked with no controller.
         void this.deps.inputLock.unlock();
@@ -221,6 +223,9 @@ export class ConnectionServer {
         case "autotype":
           this.deps.inputLock.noteClientActivity();
           await this.handleAutotype(ws, msg.text, msg.profile);
+          break;
+        case "cancelAutotype":
+          this.autotypeAbort?.abort();
           break;
         case "setInputLock":
           await this.handleSetInputLock(ws, msg.locked);
@@ -287,16 +292,19 @@ export class ConnectionServer {
       return;
     }
     this.autotyping = true;
+    const abort = new AbortController();
+    this.autotypeAbort = abort;
     try {
-      await runAutotype(
+      const completed = await runAutotype(
         text,
         profile,
-        { backend: this.deps.typingBackend },
+        { backend: this.deps.typingBackend, signal: abort.signal },
         { onProgress: (done, total) => this.send(ws, { type: "autotypeProgress", done, total }) },
       );
-      this.send(ws, { type: "autotypeDone" });
+      this.send(ws, { type: "autotypeDone", cancelled: !completed });
     } finally {
       this.autotyping = false;
+      this.autotypeAbort = null;
     }
   }
 }

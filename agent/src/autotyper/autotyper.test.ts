@@ -73,6 +73,35 @@ test("delay stays non-negative even with large jitter", async () => {
   assert.ok(waited.every((w) => w >= 0));
 });
 
+test("stops typing when the signal is aborted mid-run", async () => {
+  const { events, backend } = recorder();
+  const controller = new AbortController();
+  // Abort after the 3rd character is typed.
+  const hooks = {
+    onProgress: (done: number) => {
+      if (done === 3) controller.abort();
+    },
+  };
+  const completed = await runAutotype(
+    "abcdefghij",
+    { baseDelayMs: 0, jitterMs: 0, typoRate: 0 },
+    { backend, sleep: noSleep, rng: () => 0.9, signal: controller.signal },
+    hooks,
+  );
+  assert.equal(completed, false); // reported as cancelled
+  assert.equal(events.join(""), "abc"); // stopped after the 3rd char
+});
+
+test("returns true when it finishes without abort", async () => {
+  const { backend } = recorder();
+  const completed = await runAutotype(
+    "hi",
+    { baseDelayMs: 0, jitterMs: 0, typoRate: 0 },
+    { backend, sleep: noSleep, rng: () => 0.9 },
+  );
+  assert.equal(completed, true);
+});
+
 test("preserves case when correcting an uppercase typo", async () => {
   const { events, backend } = recorder();
   await runAutotype(

@@ -75,6 +75,11 @@ export const AutotypeMessage = z.object({
   }),
 });
 
+/** Cancel an in-progress autotype run. No-op if nothing is typing. */
+export const CancelAutotypeMessage = z.object({
+  type: z.literal("cancelAutotype"),
+});
+
 /**
  * Ask the agent to lock (or unlock) the physical keyboard + mouse at the agent
  * machine, so only the client controls it. The agent auto-releases the lock
@@ -110,6 +115,8 @@ export const AutotypeProgressMessage = z.object({
 
 export const AutotypeDoneMessage = z.object({
   type: z.literal("autotypeDone"),
+  /** True if the run was cancelled before finishing. */
+  cancelled: z.boolean().optional().default(false),
 });
 
 export const AgentErrorMessage = z.object({
@@ -136,6 +143,7 @@ export const ClientMessage = z.discriminatedUnion("type", [
   MouseMessage,
   KeyMessage,
   AutotypeMessage,
+  CancelAutotypeMessage,
   SetInputLockMessage,
 ]);
 export type ClientMessage = z.infer<typeof ClientMessage>;
