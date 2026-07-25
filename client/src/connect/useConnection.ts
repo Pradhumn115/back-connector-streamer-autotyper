@@ -11,6 +11,7 @@ import {
   type ClientMessage,
   type DecodedAudioFrame,
   type DecodedFrame,
+  type DiagnosticCheck,
 } from "@bcsa/shared";
 
 export type ConnectionStatus =
@@ -77,6 +78,12 @@ export interface UseConnectionOptions {
   onAudioFrame?: (frame: DecodedAudioFrame) => void;
 }
 
+export interface DiagnosticsState {
+  running: boolean;
+  /** Agent-reported checks from the last run (empty until run). */
+  checks: DiagnosticCheck[];
+}
+
 export interface UseConnection {
   status: ConnectionStatus;
   agentInfo: AgentInfo | null;
@@ -84,12 +91,14 @@ export interface UseConnection {
   autotype: AutotypeStatus;
   inputLock: InputLockStatus;
   audio: AudioStatus;
+  diagnostics: DiagnosticsState;
   lastError: string | null;
   params: ConnectParams;
   connect: (params: ConnectParams) => void;
   disconnect: () => void;
   send: (msg: ClientMessage) => void;
   setAudio: (enabled: boolean) => void;
+  runDiagnostics: () => void;
 }
 
 const STORAGE_KEY = "bcsa.connect";
@@ -181,6 +190,10 @@ export function useConnection(opts: UseConnectionOptions = {}): UseConnection {
     locked: false,
     supported: false,
   });
+  const [diagnostics, setDiagnostics] = useState<DiagnosticsState>({
+    running: false,
+    checks: [],
+  });
   const [lastError, setLastError] = useState<string | null>(null);
   const [params, setParams] = useState<ConnectParams>(loadParams);
 
@@ -270,6 +283,9 @@ export function useConnection(opts: UseConnectionOptions = {}): UseConnection {
         break;
       case "audioState":
         setAudioState({ supported: msg.supported, enabled: msg.enabled });
+        break;
+      case "diagnostics":
+        setDiagnostics({ running: false, checks: msg.checks });
         break;
       case "agentError":
         setLastError(msg.message);
@@ -457,6 +473,7 @@ export function useConnection(opts: UseConnectionOptions = {}): UseConnection {
       setAutotype({ done: 0, total: 0, active: false });
       setInputLock({ locked: false, supported: false });
       setAudioState({ supported: false, enabled: false });
+      setDiagnostics({ running: false, checks: [] });
       setLastError(null);
 
       paramsRef.current = next;
@@ -486,6 +503,11 @@ export function useConnection(opts: UseConnectionOptions = {}): UseConnection {
     [send],
   );
 
+  const runDiagnostics = useCallback(() => {
+    setDiagnostics((d) => ({ ...d, running: true }));
+    send({ type: "runDiagnostics" });
+  }, [send]);
+
   // Clean up on unmount.
   useEffect(() => {
     return () => {
@@ -512,11 +534,13 @@ export function useConnection(opts: UseConnectionOptions = {}): UseConnection {
     autotype,
     inputLock,
     audio,
+    diagnostics,
     lastError,
     params,
     connect,
     disconnect,
     send,
     setAudio,
+    runDiagnostics,
   };
 }

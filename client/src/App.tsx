@@ -5,6 +5,7 @@ import { useAudioTranscription } from "./audio/useAudioTranscription";
 import { useRemoteControl } from "./control/useRemoteControl";
 import { ScreenView, intervalForMode, type ContentRect } from "./view/ScreenView";
 import { AutotypePanel } from "./autotype-panel/AutotypePanel";
+import { DiagnosticsPanel } from "./diagnostics/DiagnosticsPanel";
 
 export function App() {
   // Owns the Whisper worker; conn feeds it decoded audio frames.
@@ -275,6 +276,14 @@ export function App() {
             send={conn.send}
             autotype={conn.autotype}
             disabled={!connected}
+          />
+
+          <DiagnosticsPanel
+            connected={connected}
+            hasFrame={conn.latestFrame !== null}
+            diagnostics={conn.diagnostics}
+            onRun={conn.runDiagnostics}
+            onReconnect={onConnect}
           />
         </aside>
       </div>

@@ -16,6 +16,7 @@ import type { AudioCapture } from "../audio/index.js";
 import type { InputController } from "../input/index.js";
 import { runAutotype, type TypingBackend } from "../autotyper/index.js";
 import type { InputLockManager } from "../inputlock/index.js";
+import { runDiagnostics } from "../diagnostics/index.js";
 
 export interface ServerDeps {
   secret: string;
@@ -248,12 +249,31 @@ export class ConnectionServer {
         case "setAudio":
           this.handleSetAudio(ws, msg.enabled);
           break;
+        case "runDiagnostics":
+          await this.handleRunDiagnostics(ws);
+          break;
         case "auth":
           break; // already authenticated; ignore duplicate
       }
     } catch (err) {
       this.send(ws, { type: "agentError", message: String(err) });
     }
+  }
+
+  private async handleRunDiagnostics(ws: WebSocket): Promise<void> {
+    let screenSize: { width: number; height: number } | null = null;
+    try {
+      screenSize = await this.deps.input.screenSize();
+    } catch {
+      screenSize = null; // reported as a failed check
+    }
+    const checks = runDiagnostics({
+      refreshHz: this.deps.refreshHz,
+      inputLockSupported: this.deps.inputLock.supported,
+      audioSupported: this.deps.audio.supported,
+      screenSize,
+    });
+    this.send(ws, { type: "diagnostics", checks });
   }
 
   private async handleSetInputLock(ws: WebSocket, locked: boolean): Promise<void> {

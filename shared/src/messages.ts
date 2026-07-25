@@ -80,6 +80,11 @@ export const CancelAutotypeMessage = z.object({
   type: z.literal("cancelAutotype"),
 });
 
+/** Ask the agent to run its self-diagnostics and report back. */
+export const RunDiagnosticsMessage = z.object({
+  type: z.literal("runDiagnostics"),
+});
+
 /**
  * Ask the agent to lock (or unlock) the physical keyboard + mouse at the agent
  * machine, so only the client controls it. The agent auto-releases the lock
@@ -134,6 +139,27 @@ export const AgentErrorMessage = z.object({
   message: z.string(),
 });
 
+/** One agent-side diagnostic result. */
+export const DiagnosticStatus = z.enum(["ok", "warn", "fail"]);
+export type DiagnosticStatus = z.infer<typeof DiagnosticStatus>;
+
+export const DiagnosticCheck = z.object({
+  id: z.string(),
+  label: z.string(),
+  status: DiagnosticStatus,
+  /** What was found. */
+  detail: z.string(),
+  /** How to fix it, if not ok. Instructions only — never executed remotely. */
+  fix: z.string().optional(),
+});
+export type DiagnosticCheck = z.infer<typeof DiagnosticCheck>;
+
+/** Agent's self-diagnostics report, sent in reply to runDiagnostics. */
+export const DiagnosticsMessage = z.object({
+  type: z.literal("diagnostics"),
+  checks: z.array(DiagnosticCheck),
+});
+
 /**
  * Reports the agent's local-input lock state. `supported` is false on agent OSes
  * where physical-input blocking isn't implemented, so the client can disable the
@@ -168,6 +194,7 @@ export const ClientMessage = z.discriminatedUnion("type", [
   CancelAutotypeMessage,
   SetInputLockMessage,
   SetAudioMessage,
+  RunDiagnosticsMessage,
 ]);
 export type ClientMessage = z.infer<typeof ClientMessage>;
 
@@ -179,6 +206,7 @@ export const AgentMessage = z.discriminatedUnion("type", [
   AgentErrorMessage,
   InputLockStateMessage,
   AudioStateMessage,
+  DiagnosticsMessage,
 ]);
 export type AgentMessage = z.infer<typeof AgentMessage>;
 
