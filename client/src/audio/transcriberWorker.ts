@@ -28,9 +28,14 @@ async function getTranscriber(): Promise<AutomaticSpeechRecognitionPipeline> {
   if (transcriber) return transcriber;
   if (!loading) {
     const device = pickDevice();
+    // dtype matters per device: on WASM, q8 is small (~50MB) and accurate. On
+    // WebGPU, a q8 *decoder* produces garbage tokens — so use fp32 there (the
+    // WebGPU default), which transcribes correctly. Mismatching this yields
+    // fluent-looking nonsense, not an error.
+    const dtype = device === "webgpu" ? "fp32" : "q8";
     loading = pipeline("automatic-speech-recognition", MODEL_ID, {
       device,
-      dtype: "q8", // ~50MB, works on both WebGPU and WASM
+      dtype,
       progress_callback: (p: unknown) => {
         const data = p as { progress?: number };
         if (typeof data.progress === "number") {
