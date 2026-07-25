@@ -76,6 +76,26 @@ async function fullSetup() {
   console.log(color("green", "\n✓ Setup complete.\n"));
 }
 
+/**
+ * Run only the setup steps whose outputs are missing, so a fresh clone becomes
+ * runnable automatically. Skips entirely when everything is already in place.
+ */
+async function autoBootstrap() {
+  const needInstall = !existsSync(join(ROOT, "node_modules"));
+  const needFfmpeg = !have("ffmpeg", ["-version"]);
+  const needBuild = !existsSync(join(ROOT, "shared", "dist"));
+
+  if (!needInstall && !needFfmpeg && !needBuild) return; // nothing to do
+
+  console.log(color("amber", "\n  Some prerequisites are missing — setting up automatically…"));
+  if (needInstall) await run("npm", ["install"]);
+  // ffmpeg missing ⇒ likely an unconfigured machine: run the full prerequisite
+  // installer (ffmpeg + optional cloudflared/audio + macOS native helper).
+  if (needFfmpeg) await npm("setup");
+  if (needInstall || needBuild) await npm("build");
+  console.log(color("green", "\n✓ Ready.\n"));
+}
+
 /** Local test: agent in the background + client in the foreground. */
 async function localTest() {
   console.log(color("cyan", "\nStarting the agent in the background, then the client…"));
@@ -98,6 +118,7 @@ const MENU = `
 `;
 
 async function main() {
+  await autoBootstrap(); // install/build/prereqs if anything essential is missing
   printStatus();
   for (;;) {
     console.log(MENU);
