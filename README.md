@@ -145,18 +145,57 @@ UI never blocks. WebGPU is used when available (Chrome/Edge 113+), falling back
 to WASM. The model (~50 MB) downloads once on first use and is cached in the
 browser.
 
-**One-time agent setup — a loopback device.** Capturing *system output* needs a
-virtual audio device on macOS and Windows (Linux works out of the box). `npm run
-setup` installs it:
+**One-time agent setup — a loopback device.** Capturing *system output* ("what's
+playing on the speakers") needs a virtual audio device. `npm run setup` installs
+the driver for you; the routing step below is manual because macOS/Windows gate
+audio drivers and output routing behind the GUI. **Linux needs nothing.**
 
-| OS | Device | Extra step |
-|----|--------|-----------|
-| **Linux** | PulseAudio/PipeWire monitor | none — works out of the box |
-| **macOS** | [BlackHole](https://existential.audio/blackhole/) (`brew install blackhole-2ch`) | In **Audio MIDI Setup**, create a **Multi-Output Device** (speakers + BlackHole) and select it as output, so you hear audio *and* the agent can capture it |
-| **Windows** | [VB-Cable](https://vb-audio.com/Cable/) (`choco install vb-cable`) | May need a reboot; set VB-Cable as the playback device (or enable "Listen to this device") so sound still reaches your speakers |
+The goal on every OS is the same: make app audio flow into a loopback device the
+agent can read, **while you can still hear it**.
 
-If no loopback device is present, the agent reports the feature unsupported and
-the client disables the toggle with a hint — it never silently records silence.
+### Linux — nothing to do ✓
+
+PulseAudio/PipeWire already exposes the default sink's `.monitor`. The agent
+auto-detects it (`pactl get-default-sink`). Just enable **Transcribe audio** in
+the client. (Ensure `pactl` is available — it ships with most desktop distros.)
+
+### macOS — BlackHole + a Multi-Output Device
+
+1. **Install the driver:** `npm run setup` (or `brew install blackhole-2ch`).
+   Restart the Mac if BlackHole doesn't appear in step 3.
+2. **Grant Microphone permission** to the app running the agent (Terminal/iTerm):
+   *System Settings → Privacy & Security → Microphone* → enable it. macOS treats
+   audio capture as microphone access, so without this ffmpeg records silence.
+3. **Route audio so you still hear it** — open **Audio MIDI Setup**
+   (`⌘ Space` → "Audio MIDI Setup"):
+   1. Click **+** (bottom-left) → **Create Multi-Output Device**.
+   2. In the right panel, tick **both** your speakers/headphones **and**
+      **BlackHole 2ch**. Set your speakers as the top (primary) device, and tick
+      **Drift Correction** on BlackHole.
+   3. Right-click the new **Multi-Output Device** → **Use This Device For Sound
+      Output** (or pick it in *System Settings → Sound → Output*).
+4. Now anything you play goes to your speakers **and** to BlackHole. Enable
+   **Transcribe audio** in the client. (To go back to normal, set Output back to
+   your speakers.)
+
+### Windows — VB-Cable + "Listen to this device"
+
+1. **Install the driver:** `npm run setup` (or `choco install vb-cable`, or the
+   installer from [vb-audio.com/Cable](https://vb-audio.com/Cable/)). Run it as
+   Administrator and **reboot** if asked.
+2. **Send app audio into the cable:** right-click the speaker icon → *Sound
+   settings* → set **CABLE Input** as the **Output** device. (Now apps play into
+   the cable — which is why you temporarily can't hear them; step 3 fixes that.)
+3. **Hear it too:** *Sound settings → More sound settings* (opens `mmsys.cpl`) →
+   **Recording** tab → **CABLE Output** → **Properties** → **Listen** tab → tick
+   **Listen to this device** → choose your real speakers → **OK**.
+4. The agent auto-detects **CABLE Output**. Enable **Transcribe audio** in the
+   client. (To go back to normal, set Output back to your speakers and untick
+   "Listen to this device".)
+
+If no loopback device is found, the agent reports the feature **unsupported** and
+the client **disables the toggle** with a hint — it never silently records
+silence or waits on audio that will never come.
 
 > ℹ️ v1 transcribes in ~5 s windows, so captions lag a few seconds. The design
 > (`docs/superpowers/specs/`) notes a VAD-based segmenter as the low-latency
