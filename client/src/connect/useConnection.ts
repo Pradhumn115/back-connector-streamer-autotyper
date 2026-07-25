@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  decodeAudioFrame,
   decodeFrame,
   encodeMessage,
   FrameFormat,
+  isAudioFrame,
   isFrame,
   parseAgentMessage,
   type AgentMessage,
   type ClientMessage,
+  type DecodedAudioFrame,
   type DecodedFrame,
 } from "@bcsa/shared";
 
@@ -62,17 +65,31 @@ export interface InputLockStatus {
   supported: boolean;
 }
 
+export interface AudioStatus {
+  /** Whether the agent has a system-audio loopback device available. */
+  supported: boolean;
+  /** Whether the agent is currently streaming audio. */
+  enabled: boolean;
+}
+
+export interface UseConnectionOptions {
+  /** Called for every decoded audio frame (16 kHz mono PCM) from the agent. */
+  onAudioFrame?: (frame: DecodedAudioFrame) => void;
+}
+
 export interface UseConnection {
   status: ConnectionStatus;
   agentInfo: AgentInfo | null;
   latestFrame: LatestFrame | null;
   autotype: AutotypeStatus;
   inputLock: InputLockStatus;
+  audio: AudioStatus;
   lastError: string | null;
   params: ConnectParams;
   connect: (params: ConnectParams) => void;
   disconnect: () => void;
   send: (msg: ClientMessage) => void;
+  setAudio: (enabled: boolean) => void;
 }
 
 const STORAGE_KEY = "bcsa.connect";
@@ -143,10 +160,18 @@ function buildTargets(p: ConnectParams): string[] {
  * reconnect-with-backoff. All timers/sockets live in refs so re-renders never
  * disturb them.
  */
-export function useConnection(): UseConnection {
+export function useConnection(opts: UseConnectionOptions = {}): UseConnection {
   const [status, setStatus] = useState<ConnectionStatus>("idle");
   const [agentInfo, setAgentInfo] = useState<AgentInfo | null>(null);
   const [latestFrame, setLatestFrame] = useState<LatestFrame | null>(null);
+  const [audio, setAudioState] = useState<AudioStatus>({
+    supported: false,
+    enabled: false,
+  });
+  // Keep the frame callback in a ref so the socket handlers always call the
+  // latest one without needing to re-open the connection.
+  const onAudioFrameRef = useRef(opts.onAudioFrame);
+  onAudioFrameRef.current = opts.onAudioFrame;
   const [autotype, setAutotype] = useState<AutotypeStatus>({
     done: 0,
     total: 0,
@@ -243,6 +268,9 @@ export function useConnection(): UseConnection {
       case "inputLockState":
         setInputLock({ locked: msg.locked, supported: msg.supported });
         break;
+      case "audioState":
+        setAudioState({ supported: msg.supported, enabled: msg.enabled });
+        break;
       case "agentError":
         setLastError(msg.message);
         break;
@@ -337,7 +365,11 @@ export function useConnection(): UseConnection {
           return;
         }
         if (data instanceof ArrayBuffer) {
-          if (isFrame(data)) {
+          // Audio and video share the socket; route on the frame magic.
+          if (isAudioFrame(data)) {
+            const audioFrame = decodeAudioFrame(data);
+            if (audioFrame) onAudioFrameRef.current?.(audioFrame);
+          } else if (isFrame(data)) {
             const decoded = decodeFrame(data);
             if (decoded) handleFrame(decoded);
           }
@@ -398,6 +430,7 @@ export function useConnection(): UseConnection {
     setAgentInfo(null);
     setAutotype({ done: 0, total: 0, active: false });
     setInputLock({ locked: false, supported: false });
+    setAudioState({ supported: false, enabled: false });
     setStatus("idle");
   }, [clearTimers, revokeCurrentUrl]);
 
@@ -423,6 +456,7 @@ export function useConnection(): UseConnection {
       setAgentInfo(null);
       setAutotype({ done: 0, total: 0, active: false });
       setInputLock({ locked: false, supported: false });
+      setAudioState({ supported: false, enabled: false });
       setLastError(null);
 
       paramsRef.current = next;
@@ -442,6 +476,15 @@ export function useConnection(): UseConnection {
       ws.send(encodeMessage(msg));
     }
   }, []);
+
+  const setAudio = useCallback(
+    (enabled: boolean) => {
+      // Optimistic local echo; the agent confirms with an audioState message.
+      setAudioState((a) => ({ ...a, enabled }));
+      send({ type: "setAudio", enabled });
+    },
+    [send],
+  );
 
   // Clean up on unmount.
   useEffect(() => {
@@ -468,10 +511,12 @@ export function useConnection(): UseConnection {
     latestFrame,
     autotype,
     inputLock,
+    audio,
     lastError,
     params,
     connect,
     disconnect,
     send,
+    setAudio,
   };
 }

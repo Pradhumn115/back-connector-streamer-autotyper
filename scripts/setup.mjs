@@ -105,10 +105,50 @@ function ensure(tool, { required }) {
   return ok;
 }
 
+/**
+ * Install a system-audio loopback device so the agent can capture "any playing
+ * audio" for transcription. Unlike ffmpeg/cloudflared these are audio drivers
+ * with no CLI to probe, so we just run the (idempotent) installer and let the
+ * agent detect the device at runtime. Optional — only needed for the client's
+ * "Transcribe audio" feature.
+ */
+function installLoopback() {
+  console.log("\nSystem-audio loopback (optional — for audio transcription):");
+  if (OS === "darwin") {
+    const ok = run("brew", ["install", "blackhole-2ch"]);
+    console.log(
+      ok
+        ? "✓ BlackHole installed. MANUAL STEP: open Audio MIDI Setup → create a\n" +
+            "  Multi-Output Device combining your speakers + BlackHole, and set it as\n" +
+            "  the system output, so you both hear audio AND the agent can capture it."
+        : "✗ couldn't install BlackHole — get it from https://existential.audio/blackhole/",
+    );
+  } else if (OS === "win32") {
+    const pm = detectPkgManager();
+    if (pm === "choco") {
+      const ok = run("choco", ["install", "vb-cable", "-y"]);
+      console.log(
+        ok
+          ? "✓ VB-Cable installed. It may need a reboot / driver-approval before the\n" +
+              "  device appears. Set VB-Cable as the playback device (or use \"Listen to\n" +
+              "  this device\") so audio still reaches your speakers."
+          : "✗ couldn't install VB-Cable — get it from https://vb-audio.com/Cable/",
+      );
+    } else {
+      console.log(
+        "  No Chocolatey found. Install VB-Cable manually: https://vb-audio.com/Cable/",
+      );
+    }
+  } else {
+    console.log("  Nothing to install — Linux uses the PulseAudio/PipeWire monitor.");
+  }
+}
+
 console.log(`Back·Connector setup — OS: ${OS}\n`);
 
 const ffmpegOk = ensure("ffmpeg", { required: true });
 ensure("cloudflared", { required: false });
+installLoopback();
 
 if (OS === "darwin") {
   console.log("\nBuilding macOS input-lock helper…");

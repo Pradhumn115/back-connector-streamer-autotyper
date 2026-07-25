@@ -1,12 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import type { StreamMode } from "@bcsa/shared";
 import { useConnection } from "./connect/useConnection";
+import { useAudioTranscription } from "./audio/useAudioTranscription";
 import { useRemoteControl } from "./control/useRemoteControl";
 import { ScreenView, intervalForMode, type ContentRect } from "./view/ScreenView";
 import { AutotypePanel } from "./autotype-panel/AutotypePanel";
 
 export function App() {
-  const conn = useConnection();
+  // Owns the Whisper worker; conn feeds it decoded audio frames.
+  const audioTx = useAudioTranscription();
+  const conn = useConnection({ onAudioFrame: audioTx.pushFrame });
   const canvasRef = useRef<HTMLCanvasElement>(null);
   // The letterbox rectangle the frame occupies inside the canvas, shared between
   // the view (which computes it) and the control layer (which maps clicks with it).
@@ -52,6 +55,22 @@ export function App() {
     setMode(next);
     conn.send({ type: "setMode", mode: next, intervalMs: intervalForMode(next, refreshHz) });
   };
+
+  const onToggleTranscribe = (on: boolean) => {
+    if (on) {
+      audioTx.start(); // load model + begin accepting frames
+      conn.setAudio(true); // ask the agent to stream loopback audio
+    } else {
+      conn.setAudio(false);
+      audioTx.stop();
+    }
+  };
+
+  // Stop transcription if the connection drops (audio stops arriving anyway).
+  useEffect(() => {
+    if (!connected) audioTx.stop();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connected]);
 
   const statusText = (() => {
     switch (conn.status) {
@@ -211,6 +230,45 @@ export function App() {
                   ? "Agent's physical keyboard/mouse are blocked. Auto-releases after 10s idle or on disconnect."
                   : "Blocks the person at the agent from interfering — only your input gets through."}
             </p>
+          </div>
+
+          <div className="card">
+            <label className="switch">
+              <input
+                type="checkbox"
+                checked={conn.audio.enabled}
+                onChange={(e) => onToggleTranscribe(e.target.checked)}
+                disabled={!connected || !conn.audio.supported}
+              />
+              <span className="switch-track" />
+              <span className="switch-label">Transcribe audio</span>
+            </label>
+            <p className={`hint ${audioTx.status === "error" ? "warn" : ""}`}>
+              {connected && !conn.audio.supported
+                ? "No loopback device on the agent — install BlackHole (macOS) / VB-Cable (Windows). See README."
+                : audioTx.status === "loading"
+                  ? `Loading speech model… ${audioTx.progress}%`
+                  : audioTx.status === "error"
+                    ? `Model error: ${audioTx.error ?? "failed to load"}`
+                    : audioTx.status === "ready"
+                      ? `Transcribing the agent's audio locally${audioTx.device ? ` · ${audioTx.device}` : ""}.`
+                      : "Transcribes whatever's playing on the agent to text, in your browser."}
+            </p>
+            {(audioTx.transcript || audioTx.status === "ready") && (
+              <div className="transcript">
+                <div className="transcript-head">
+                  <span>Transcript</span>
+                  <button className="btn btn-ghost btn-xs" onClick={audioTx.reset}>
+                    Clear
+                  </button>
+                </div>
+                <div className="transcript-body">
+                  {audioTx.transcript || (
+                    <span className="transcript-empty">Listening…</span>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
 
           <AutotypePanel

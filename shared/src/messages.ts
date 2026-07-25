@@ -90,6 +90,16 @@ export const SetInputLockMessage = z.object({
   locked: z.boolean(),
 });
 
+/**
+ * Ask the agent to start (or stop) capturing its system output audio and
+ * streaming it as binary audio frames. Used by the client only to transcribe —
+ * there is no client-side playback. No-op if the agent has no loopback device.
+ */
+export const SetAudioMessage = z.object({
+  type: z.literal("setAudio"),
+  enabled: z.boolean(),
+});
+
 // ---- agent -> client ----
 
 export const AuthResultMessage = z.object({
@@ -135,6 +145,18 @@ export const InputLockStateMessage = z.object({
   supported: z.boolean(),
 });
 
+/**
+ * Reports the agent's system-audio capture state. `supported` is false when the
+ * agent has no loopback device (e.g. BlackHole/VB-Cable not installed), so the
+ * client can disable the transcribe toggle and never wait on audio that will
+ * never arrive.
+ */
+export const AudioStateMessage = z.object({
+  type: z.literal("audioState"),
+  enabled: z.boolean(),
+  supported: z.boolean(),
+});
+
 // ---- unions ----
 
 export const ClientMessage = z.discriminatedUnion("type", [
@@ -145,6 +167,7 @@ export const ClientMessage = z.discriminatedUnion("type", [
   AutotypeMessage,
   CancelAutotypeMessage,
   SetInputLockMessage,
+  SetAudioMessage,
 ]);
 export type ClientMessage = z.infer<typeof ClientMessage>;
 
@@ -155,6 +178,7 @@ export const AgentMessage = z.discriminatedUnion("type", [
   AutotypeDoneMessage,
   AgentErrorMessage,
   InputLockStateMessage,
+  AudioStateMessage,
 ]);
 export type AgentMessage = z.infer<typeof AgentMessage>;
 

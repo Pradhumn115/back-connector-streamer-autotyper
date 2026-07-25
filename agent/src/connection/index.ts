@@ -3,6 +3,8 @@ import { timingSafeEqual } from "node:crypto";
 import type { AddressInfo } from "node:net";
 import { WebSocketServer, type WebSocket } from "ws";
 import {
+  AudioFormat,
+  encodeAudioFrame,
   encodeFrame,
   encodeMessage,
   parseClientMessage,
@@ -10,6 +12,7 @@ import {
   type AutotypeProfile,
 } from "@bcsa/shared";
 import type { ScreenCapture } from "../capture/index.js";
+import type { AudioCapture } from "../audio/index.js";
 import type { InputController } from "../input/index.js";
 import { runAutotype, type TypingBackend } from "../autotyper/index.js";
 import type { InputLockManager } from "../inputlock/index.js";
@@ -25,6 +28,7 @@ export interface ServerDeps {
   capture: ScreenCapture;
   typingBackend: TypingBackend;
   inputLock: InputLockManager;
+  audio: AudioCapture;
   /** Detected display refresh rate (Hz), reported to the client for fps target. */
   refreshHz: number;
 }
@@ -57,6 +61,7 @@ export class ConnectionServer {
   private wss: WebSocketServer | null = null;
   private controller: WebSocket | null = null;
   private seq = 0;
+  private audioSeq = 0;
   private autotyping = false;
   private autotypeAbort: AbortController | null = null;
 
@@ -100,6 +105,7 @@ export class ConnectionServer {
 
   async close(): Promise<void> {
     this.deps.capture.stop();
+    this.deps.audio.stop();
     await this.deps.inputLock.unlock();
     this.controller?.close();
     await new Promise<void>((resolve) => {
@@ -162,6 +168,7 @@ export class ConnectionServer {
         this.autotyping = false;
         this.autotypeAbort?.abort(); // stop any in-progress autotype
         this.deps.capture.stop();
+        this.deps.audio.stop();
         // Safety: never leave the agent's input locked with no controller.
         void this.deps.inputLock.unlock();
       }
@@ -192,6 +199,14 @@ export class ConnectionServer {
       type: "inputLockState",
       locked: this.deps.inputLock.isLocked,
       supported: this.deps.inputLock.supported,
+    });
+
+    // Tell the client whether system-audio capture is available. Off by default;
+    // the client turns it on when it wants to transcribe.
+    this.send(ws, {
+      type: "audioState",
+      enabled: false,
+      supported: this.deps.audio.supported,
     });
 
     this.deps.capture.setInterval(SCREENSHOT_INTERVAL);
@@ -229,6 +244,9 @@ export class ConnectionServer {
           break;
         case "setInputLock":
           await this.handleSetInputLock(ws, msg.locked);
+          break;
+        case "setAudio":
+          this.handleSetAudio(ws, msg.enabled);
           break;
         case "auth":
           break; // already authenticated; ignore duplicate
@@ -268,6 +286,45 @@ export class ConnectionServer {
       type: "inputLockState",
       locked: this.deps.inputLock.isLocked,
       supported: this.deps.inputLock.supported,
+    });
+  }
+
+  /**
+   * Start or stop streaming system-audio (loopback) frames to the controller.
+   * If capture isn't supported, reports that honestly instead of a silent no-op.
+   */
+  private handleSetAudio(ws: WebSocket, enabled: boolean): void {
+    if (enabled && !this.deps.audio.supported) {
+      this.send(ws, {
+        type: "agentError",
+        message:
+          "system-audio capture unavailable: no loopback device (install BlackHole/VB-Cable, see README)",
+      });
+      this.send(ws, { type: "audioState", enabled: false, supported: false });
+      return;
+    }
+    if (enabled) {
+      this.audioSeq = 0;
+      this.deps.audio.start((pcm) => {
+        if (this.controller?.readyState === this.controller?.OPEN) {
+          const buf = encodeAudioFrame(
+            this.audioSeq++,
+            Date.now(),
+            this.deps.audio.sampleRate,
+            this.deps.audio.channels,
+            AudioFormat.PCM_S16LE,
+            pcm,
+          );
+          this.controller!.send(buf, { binary: true });
+        }
+      });
+    } else {
+      this.deps.audio.stop();
+    }
+    this.send(ws, {
+      type: "audioState",
+      enabled,
+      supported: this.deps.audio.supported,
     });
   }
 

@@ -12,6 +12,7 @@ import {
   type AgentMessage,
 } from "@bcsa/shared";
 import { ConnectionServer } from "./index.js";
+import { AudioCapture } from "../audio/index.js";
 import { CaptureLoop, type CapturedImage } from "../capture/index.js";
 import { InputController, type InputBackend } from "../input/index.js";
 import type { TypingBackend } from "../autotyper/index.js";
@@ -72,6 +73,7 @@ async function startServer(secret: string, recorded: string[]) {
     capture: fakeCapture(),
     typingBackend: fakeTyping(),
     inputLock: fakeInputLock(),
+    audio: new AudioCapture(null), // no loopback device -> supported:false, no ffmpeg
     refreshHz: 60,
   });
   await server.listen();

@@ -9,6 +9,7 @@ import { InputController } from "./input/index.js";
 import { createNutBackend } from "./input/nutBackend.js";
 import { createNutTypingBackend } from "./autotyper/nutTyping.js";
 import { ConnectionServer } from "./connection/index.js";
+import { AudioCapture } from "./audio/index.js";
 import { InputLockManager } from "./inputlock/index.js";
 import { createInputLockBackend } from "./inputlock/backends.js";
 import { registerLockHotkey } from "./inputlock/hotkey.js";
@@ -22,6 +23,7 @@ async function main(): Promise<void> {
 
   const input = new InputController(await createNutBackend());
   const typingBackend = await createNutTypingBackend();
+  const audio = new AudioCapture();
 
   // Prefer the continuous ffmpeg pipeline (can sustain ~30fps); fall back to the
   // per-frame screenshot loop (a few fps) when ffmpeg isn't installed.
@@ -55,6 +57,7 @@ async function main(): Promise<void> {
     capture,
     typingBackend,
     inputLock,
+    audio,
     refreshHz,
   });
 

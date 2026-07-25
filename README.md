@@ -100,6 +100,8 @@ Then:
   rate), and click *Type it*.
 - **Lock agent's local input:** blocks the physical keyboard/mouse at the agent
   so only you (the client) drive it. See below.
+- **Transcribe audio:** live text transcript of whatever is playing on the
+  agent, produced by a speech model running in your browser. See below.
 
 ## Locking the agent's local input
 
@@ -127,6 +129,38 @@ native `CGEventTap` on macOS / `EVIOCGRAB` on Linux.)
 > administrator"**. If the agent isn't elevated, the lock request fails cleanly —
 > the client shows *not* locked plus a "run as Administrator" message, rather
 > than a false lock.
+
+## Transcribing the agent's audio
+
+The client's **"Transcribe audio"** toggle captures whatever is playing on the
+agent (system output) and turns it into a live text transcript. The speech model
+(**Whisper**, via `@huggingface/transformers`) runs **entirely in your browser** —
+the audio is transcribed locally and **never leaves the client**. There is no
+playback; audio is streamed only to feed the model.
+
+**How it works:** the agent captures its loopback audio with ffmpeg as 16 kHz
+mono PCM and streams it to the client, which resamples nothing (already Whisper's
+native rate), buffers ~5 s windows, and transcribes each in a Web Worker so the
+UI never blocks. WebGPU is used when available (Chrome/Edge 113+), falling back
+to WASM. The model (~50 MB) downloads once on first use and is cached in the
+browser.
+
+**One-time agent setup — a loopback device.** Capturing *system output* needs a
+virtual audio device on macOS and Windows (Linux works out of the box). `npm run
+setup` installs it:
+
+| OS | Device | Extra step |
+|----|--------|-----------|
+| **Linux** | PulseAudio/PipeWire monitor | none — works out of the box |
+| **macOS** | [BlackHole](https://existential.audio/blackhole/) (`brew install blackhole-2ch`) | In **Audio MIDI Setup**, create a **Multi-Output Device** (speakers + BlackHole) and select it as output, so you hear audio *and* the agent can capture it |
+| **Windows** | [VB-Cable](https://vb-audio.com/Cable/) (`choco install vb-cable`) | May need a reboot; set VB-Cable as the playback device (or enable "Listen to this device") so sound still reaches your speakers |
+
+If no loopback device is present, the agent reports the feature unsupported and
+the client disables the toggle with a hint — it never silently records silence.
+
+> ℹ️ v1 transcribes in ~5 s windows, so captions lag a few seconds. The design
+> (`docs/superpowers/specs/`) notes a VAD-based segmenter as the low-latency
+> improvement path.
 
 ## Remote access via Cloudflare Tunnel
 
