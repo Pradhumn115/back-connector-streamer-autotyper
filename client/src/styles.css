@@ -308,6 +308,32 @@ body::after {
   background: rgba(255, 180, 84, 0.14);
   color: var(--amber);
 }
+.seg button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.seg.seg-sm button {
+  padding: 4px 10px;
+  font-size: 10.5px;
+}
+
+/* Record-mode control row */
+.record-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 4px;
+}
+.record-time {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
 
 .readout {
   display: flex;

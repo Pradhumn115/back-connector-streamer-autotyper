@@ -5,9 +5,13 @@
  * `load` message, then transcribes Float32Array windows (16 kHz mono) posted to
  * it. Prefers WebGPU (5–10× faster) and falls back to WASM.
  *
- * Messages IN:  { type: "load" } | { type: "transcribe", audio: Float32Array }
+ * Messages IN:  { type: "load" }
+ *             | { type: "transcribe", id, audio: Float32Array, chunkLengthS? }
  * Messages OUT: { type: "progress", progress } | { type: "ready", device }
- *             | { type: "result", text } | { type: "error", error }
+ *             | { type: "result", id, text } | { type: "error", id?, error }
+ *
+ * Each transcribe carries an `id` the main thread correlates to its request, so
+ * it can await individual segments (needed for Record mode's N-segment takes).
  */
 import { pipeline, env, type AutomaticSpeechRecognitionPipeline } from "@huggingface/transformers";
 
@@ -54,20 +58,27 @@ async function getTranscriber(): Promise<AutomaticSpeechRecognitionPipeline> {
 self.addEventListener("message", async (e: MessageEvent) => {
   const msg = e.data as
     | { type: "load" }
-    | { type: "transcribe"; audio: Float32Array };
+    | { type: "transcribe"; id: number; audio: Float32Array; chunkLengthS?: number };
 
-  try {
-    if (msg.type === "load") {
+  if (msg.type === "load") {
+    try {
       await getTranscriber();
-      return;
+    } catch (err) {
+      self.postMessage({ type: "error", error: String(err) });
     }
-    if (msg.type === "transcribe") {
+    return;
+  }
+
+  if (msg.type === "transcribe") {
+    try {
       const t = await getTranscriber();
-      const out = (await t(msg.audio)) as { text?: string };
-      const text = (out.text ?? "").trim();
-      if (text) self.postMessage({ type: "result", text });
+      // chunk_length_s lets Whisper handle long (>30s) record takes; omit it for
+      // short live utterances (cheaper single-pass).
+      const opts = msg.chunkLengthS ? { chunk_length_s: msg.chunkLengthS } : undefined;
+      const out = (await t(msg.audio, opts)) as { text?: string };
+      self.postMessage({ type: "result", id: msg.id, text: (out.text ?? "").trim() });
+    } catch (err) {
+      self.postMessage({ type: "error", id: msg.id, error: String(err) });
     }
-  } catch (err) {
-    self.postMessage({ type: "error", error: String(err) });
   }
 });

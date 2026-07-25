@@ -7,6 +7,14 @@ import { ScreenView, intervalForMode, type ContentRect } from "./view/ScreenView
 import { AutotypePanel } from "./autotype-panel/AutotypePanel";
 import { DiagnosticsPanel } from "./diagnostics/DiagnosticsPanel";
 
+/** Format elapsed milliseconds as M:SS for the record timer. */
+function fmtElapsed(ms: number): string {
+  const total = Math.floor(ms / 1000);
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
 export function App() {
   // Owns the Whisper worker; conn feeds it decoded audio frames.
   const audioTx = useAudioTranscription();
@@ -57,19 +65,38 @@ export function App() {
     conn.send({ type: "setMode", mode: next, intervalMs: intervalForMode(next, refreshHz) });
   };
 
-  const onToggleTranscribe = (on: boolean) => {
+  // Live captions: continuous, VAD-gated transcription.
+  const onToggleLive = (on: boolean) => {
     if (on) {
-      audioTx.start(); // load model + begin accepting frames
+      audioTx.startLive();
       conn.setAudio(true); // ask the agent to stream loopback audio
     } else {
       conn.setAudio(false);
-      audioTx.stop();
+      audioTx.stopLive();
     }
   };
 
-  // Stop transcription if the connection drops (audio stops arriving anyway).
+  // Record mode: buffer the take while recording; transcribe it on pause.
+  const onRecordToggle = () => {
+    if (audioTx.recording) {
+      conn.setAudio(false);
+      void audioTx.pauseRecording();
+    } else {
+      audioTx.startRecording();
+      conn.setAudio(true);
+    }
+  };
+
+  // Switching modes stops any active capture/transcription first.
+  const onSwitchMode = (next: "live" | "record") => {
+    if (next === audioTx.mode) return;
+    conn.setAudio(false);
+    audioTx.setMode(next);
+  };
+
+  // Stop live transcription if the connection drops (audio stops arriving).
   useEffect(() => {
-    if (!connected) audioTx.stop();
+    if (!connected) audioTx.stopLive();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connected]);
 
@@ -234,16 +261,52 @@ export function App() {
           </div>
 
           <div className="card">
-            <label className="switch">
-              <input
-                type="checkbox"
-                checked={conn.audio.enabled}
-                onChange={(e) => onToggleTranscribe(e.target.checked)}
-                disabled={!connected || !conn.audio.supported}
-              />
-              <span className="switch-track" />
-              <span className="switch-label">Transcribe audio</span>
-            </label>
+            <div className="card-head">
+              <span className="card-title">Transcribe audio</span>
+              <div className="seg seg-sm">
+                <button
+                  className={audioTx.mode === "live" ? "active" : ""}
+                  onClick={() => onSwitchMode("live")}
+                  disabled={!connected || !conn.audio.supported}
+                >
+                  Live
+                </button>
+                <button
+                  className={audioTx.mode === "record" ? "active" : ""}
+                  onClick={() => onSwitchMode("record")}
+                  disabled={!connected || !conn.audio.supported}
+                >
+                  Record
+                </button>
+              </div>
+            </div>
+
+            {audioTx.mode === "live" ? (
+              <label className="switch">
+                <input
+                  type="checkbox"
+                  checked={audioTx.liveActive}
+                  onChange={(e) => onToggleLive(e.target.checked)}
+                  disabled={!connected || !conn.audio.supported}
+                />
+                <span className="switch-track" />
+                <span className="switch-label">Live captions</span>
+              </label>
+            ) : (
+              <div className="record-row">
+                <button
+                  className={`btn ${audioTx.recording ? "btn-danger" : "btn-primary"}`}
+                  onClick={onRecordToggle}
+                  disabled={!connected || !conn.audio.supported || audioTx.transcribing}
+                >
+                  {audioTx.recording ? "⏸ Pause & transcribe" : "⏺ Record"}
+                </button>
+                {(audioTx.recording || audioTx.elapsedMs > 0) && (
+                  <span className="record-time">{fmtElapsed(audioTx.elapsedMs)}</span>
+                )}
+              </div>
+            )}
+
             <p className={`hint ${audioTx.status === "error" ? "warn" : ""}`}>
               {connected && !conn.audio.supported
                 ? "No loopback device on the agent — install BlackHole (macOS) / VB-Cable (Windows). See README."
@@ -251,11 +314,16 @@ export function App() {
                   ? `Loading speech model… ${audioTx.progress}%`
                   : audioTx.status === "error"
                     ? `Model error: ${audioTx.error ?? "failed to load"}`
-                    : audioTx.status === "ready"
-                      ? `Transcribing the agent's audio locally${audioTx.device ? ` · ${audioTx.device}` : ""}.`
-                      : "Transcribes whatever's playing on the agent to text, in your browser."}
+                    : audioTx.transcribing
+                      ? "Transcribing the recording…"
+                      : audioTx.mode === "record"
+                        ? "Record a take, then Pause to transcribe the whole thing."
+                        : audioTx.status === "ready"
+                          ? `Live captions${audioTx.device ? ` · ${audioTx.device}` : ""} — speech only, silence skipped.`
+                          : "Transcribes whatever's playing on the agent to text, in your browser."}
             </p>
-            {(audioTx.transcript || audioTx.status === "ready") && (
+
+            {(audioTx.transcript || audioTx.status === "ready" || audioTx.transcribing) && (
               <div className="transcript">
                 <div className="transcript-head">
                   <span>Transcript</span>
@@ -265,7 +333,13 @@ export function App() {
                 </div>
                 <div className="transcript-body">
                   {audioTx.transcript || (
-                    <span className="transcript-empty">Listening…</span>
+                    <span className="transcript-empty">
+                      {audioTx.transcribing
+                        ? "Transcribing…"
+                        : audioTx.mode === "record"
+                          ? "Press Record to start."
+                          : "Listening…"}
+                    </span>
                   )}
                 </div>
               </div>
