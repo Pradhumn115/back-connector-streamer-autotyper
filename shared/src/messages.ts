@@ -105,6 +105,22 @@ export const SetAudioMessage = z.object({
   enabled: z.boolean(),
 });
 
+/** Ask the agent to open a WebRTC session (H264 video + Opus audio) and send an offer. */
+export const StartWebrtcMessage = z.object({
+  type: z.literal("startWebrtc"),
+});
+
+/** Ask the agent to tear down its WebRTC session, if any. */
+export const StopWebrtcMessage = z.object({
+  type: z.literal("stopWebrtc"),
+});
+
+/** The client's SDP answer to the agent's WebRTC offer. */
+export const WebrtcAnswerMessage = z.object({
+  type: z.literal("webrtcAnswer"),
+  sdp: z.string().min(1),
+});
+
 // ---- agent -> client ----
 
 export const AuthResultMessage = z.object({
@@ -183,6 +199,23 @@ export const AudioStateMessage = z.object({
   supported: z.boolean(),
 });
 
+/** The agent's SDP offer, sent once its WebRTC tracks are ready. */
+export const WebrtcOfferMessage = z.object({
+  type: z.literal("webrtcOffer"),
+  sdp: z.string().min(1),
+});
+
+/**
+ * Reports the agent's WebRTC session state. Always reflects the true state,
+ * including connection failures, so the client never shows an active session
+ * that isn't really there (same honesty contract as audioState/inputLockState).
+ */
+export const WebrtcStateMessage = z.object({
+  type: z.literal("webrtcState"),
+  active: z.boolean(),
+  error: z.string().optional(),
+});
+
 // ---- unions ----
 
 export const ClientMessage = z.discriminatedUnion("type", [
@@ -195,6 +228,9 @@ export const ClientMessage = z.discriminatedUnion("type", [
   SetInputLockMessage,
   SetAudioMessage,
   RunDiagnosticsMessage,
+  StartWebrtcMessage,
+  StopWebrtcMessage,
+  WebrtcAnswerMessage,
 ]);
 export type ClientMessage = z.infer<typeof ClientMessage>;
 
@@ -207,6 +243,8 @@ export const AgentMessage = z.discriminatedUnion("type", [
   InputLockStateMessage,
   AudioStateMessage,
   DiagnosticsMessage,
+  WebrtcOfferMessage,
+  WebrtcStateMessage,
 ]);
 export type AgentMessage = z.infer<typeof AgentMessage>;
 
