@@ -93,6 +93,32 @@ async function main(): Promise<void> {
       "-level", tier.ffmpegLevel,
       "-preset", "ultrafast",
       "-tune", "zerolatency",
+      // One slice per frame. This is what actually made browsers decode.
+      //
+      // `-tune zerolatency` turns ON x264's sliced-threads, which splits every
+      // frame into one slice per worker thread. Measured on the RTP output with
+      // the rest of these args unchanged: 90 frames produced ~700 slice NALs
+      // (~8 per frame, matching the core count), aggregated by ffmpeg's rtp
+      // muxer into STAP-A packets. With slicing off the same clip produces
+      // exactly one slice per frame and no aggregated slice packets at all.
+      //
+      // Browser WebRTC decoders handle multi-slice frames poorly -- the stream
+      // is well-formed (SPS/PPS in-band before every IDR, verified) and RTP
+      // flows normally, but nothing decodes, so the receiver just PLIs forever
+      // against a picture it can never build. Because the slice count follows
+      // the CPU's core count, this reproduced identically on every machine and
+      // looked like a platform-independent transport bug rather than an
+      // encoder setting.
+      //
+      // `-threads 1` rather than sliced-threads=0 alone: with slicing off but
+      // several threads, x264 switches to FRAME threading, which buys back
+      // throughput at the cost of a delay of `threads` frames -- about 130ms at
+      // 60fps, which a remote-desktop cannot spend. Single-threaded ultrafast
+      // measured 1.56s to encode 120 frames at 3456x2234, inside the 2.0s
+      // realtime budget for 60fps. sliced-threads=0 is set alongside it so the
+      // intent survives if the thread count is ever raised.
+      "-threads", "1",
+      "-x264-params", "sliced-threads=0",
       // Bounded GOP -- one IDR per second of output.
       //
       // `-tune zerolatency` leaves the keyframe interval effectively
