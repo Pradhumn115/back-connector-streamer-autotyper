@@ -88,9 +88,29 @@ export class RtpRelay {
       return;
     }
     const socket = createSocket("udp4");
+    // Each ffmpeg process starts a BRAND NEW RTP stream: random initial
+    // sequence number, random initial timestamp. werift's RTCRtpSender adds a
+    // fixed seqOffset/timestampOffset to every outgoing packet and only
+    // recomputes them in replaceRTP(), which it wires to
+    // `track.onSourceChanged`. Without firing that on a respawn, the new
+    // process's fresh numbering flows out with the *previous* process's
+    // offsets applied — an enormous sequence/timestamp discontinuity that
+    // stalls the browser's depacketizer for good. Symptom: video plays fine,
+    // then freezes permanently the first time ffmpeg restarts.
+    //
+    // Announcing the first packet of every spawn re-bases those offsets so
+    // the outgoing stream stays continuous across restarts. Safe on the very
+    // first spawn too: replaceRTP() no-ops while the sender has no previous
+    // sequence number.
+    let announcedSource = false;
     socket.on("message", (data) => {
       try {
-        track.writeRtp(RtpPacket.deSerialize(data));
+        const packet = RtpPacket.deSerialize(data);
+        if (!announcedSource) {
+          announcedSource = true;
+          track.onSourceChanged.execute(packet.header);
+        }
+        track.writeRtp(packet);
       } catch (err) {
         process.stderr.write(`[webrtc:${this.kind}] bad RTP packet: ${String(err)}\n`);
       }
