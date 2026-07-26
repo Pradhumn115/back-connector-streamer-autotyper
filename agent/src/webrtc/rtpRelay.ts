@@ -12,6 +12,8 @@ import { RtpPacket, type MediaStreamTrack } from "werift";
 export class RtpRelay {
   private proc: ChildProcess | null = null;
   private socket: Socket | null = null;
+  /** Bumped on every stop(); lets an in-flight start() detect it was cancelled. */
+  private generation = 0;
 
   constructor(
     private readonly kind: "video" | "audio",
@@ -21,9 +23,13 @@ export class RtpRelay {
 
   async start(track: MediaStreamTrack): Promise<void> {
     this.stop();
+    const generation = this.generation;
     const port = await randomUdpPort();
+    if (generation !== this.generation) {
+      // stop() was called while we were awaiting the port; abandon setup.
+      return;
+    }
     const socket = createSocket("udp4");
-    this.socket = socket;
     socket.on("message", (data) => {
       try {
         track.writeRtp(RtpPacket.deSerialize(data));
@@ -31,7 +37,11 @@ export class RtpRelay {
         process.stderr.write(`[webrtc:${this.kind}] bad RTP packet: ${String(err)}\n`);
       }
     });
-    socket.bind(port);
+    socket.on("error", (err) => {
+      process.stderr.write(`[webrtc:${this.kind}] RTP socket error: ${String(err)}\n`);
+    });
+    socket.bind(port, "127.0.0.1");
+    this.socket = socket;
 
     const proc = spawn("ffmpeg", this.buildArgs(port), { stdio: ["ignore", "ignore", "ignore"] });
     this.proc = proc;
@@ -47,6 +57,7 @@ export class RtpRelay {
   }
 
   stop(): void {
+    this.generation++;
     if (this.proc) {
       this.proc.kill("SIGKILL");
       this.proc = null;
@@ -62,7 +73,7 @@ export class RtpRelay {
 function randomUdpPort(): Promise<number> {
   return new Promise((resolve, reject) => {
     const probe = createSocket("udp4");
-    probe.bind(0, () => {
+    probe.bind(0, "127.0.0.1", () => {
       const port = (probe.address() as { port: number }).port;
       probe.close(() => resolve(port));
     });
