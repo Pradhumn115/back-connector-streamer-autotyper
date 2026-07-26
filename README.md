@@ -39,7 +39,38 @@ client/   web app (React + Vite): view screen, control, autotype panel
   `screenshot-desktop` may require ImageMagick installed.
 - **Windows:** works out of the box.
 
-## Setup
+## Quick start (recommended) — the launcher
+
+The easiest way on any machine is the interactive launcher. It **auto-detects
+what's missing and sets it up** (installs dependencies, prerequisites, and
+builds), then shows a menu to run what you want:
+
+```bash
+npm install    # once, to get the launcher's own deps
+npm start      # or: node launch.mjs
+```
+
+On first run it installs/builds automatically if needed, then presents:
+
+```
+  1  Full setup        install deps + prerequisites + build
+  2  Run agent         this machine gets controlled + streamed
+  3  Run client        control another machine from your browser
+  4  Run tunnel        expose the agent over Cloudflare (remote)
+  5  Rebuild           recompile all packages
+  6  Local test        agent + client on this machine
+  q  Quit
+```
+
+Pick **2** on the machine you want to control and **3** on the machine you're
+controlling from. Ctrl-C stops the running task and returns you to the menu.
+
+> The launcher just orchestrates the individual `npm run …` scripts below — use
+> those directly if you prefer.
+
+## Setup (manual)
+
+If you'd rather run the steps yourself instead of the launcher:
 
 ```bash
 npm install          # installs all workspaces
