@@ -12,7 +12,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "start": "tsx src/index.ts",
     "start:built": "node dist/index.js",
-    "test": "node --test --import tsx \"./src/**/*.test.ts\""
+    "test": "node --test --test-force-exit --import tsx \"./src/**/*.test.ts\""
   },
   "dependencies": {
     "@bcsa/shared": "*",
