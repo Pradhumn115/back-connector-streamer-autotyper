@@ -17,7 +17,7 @@ const ICE_CONNECT_TIMEOUT_MS = 5000;
 function stripSrflxCandidates(sdp: string): string {
   return sdp
     .split("\r\n")
-    .filter((line) => !(line.startsWith("a=candidate:") && line.includes(" typ srflx ")))
+    .filter((line) => !(line.startsWith("a=candidate:") && / typ srflx(\s|$)/.test(line)))
     .join("\r\n");
 }
 
@@ -202,15 +202,36 @@ export class WebrtcSession {
    * doesn't advertise as writable, so it's wrapped in try/catch and backed
    * by `stripSrflxCandidates()` in `createOffer()` as a second line of
    * defense in case a future werift version restructures this shape and
-   * this hook silently stops working.
+   * this hook silently stops working. The loop itself (including the
+   * `iceTransports` getter access) lives inside the try too: if a future
+   * werift version renames/removes that getter, or it's ever undefined,
+   * this must degrade to best-effort rather than throwing out of the
+   * constructor.
+   *
+   * After the assignment, we read `stunServer` back and log to stderr if
+   * it isn't `false`. `stripSrflxCandidates()` only scrubs the leaked
+   * candidate from the SDP -- it doesn't stop the underlying STUN request
+   * (and its ~5s gather stall) from actually firing. If this hook ever
+   * silently no-ops (e.g. on a werift upgrade), that request would still
+   * go out to Google with nothing surfacing the regression; this readback
+   * at least makes that visible in logs instead of silent.
    */
   private suppressStun(): void {
-    for (const transport of this.pc.iceTransports) {
-      try {
-        (transport.connection as { stunServer?: unknown }).stunServer = false;
-      } catch {
-        // Best-effort; stripSrflxCandidates() in createOffer() is the fallback.
+    try {
+      for (const transport of this.pc.iceTransports ?? []) {
+        const connection = transport.connection as { stunServer?: unknown };
+        connection.stunServer = false;
+        if (connection.stunServer !== false) {
+          console.error(
+            "WebrtcSession: suppressStun() readback shows stunServer is still",
+            connection.stunServer,
+            "-- STUN leak likely; stripSrflxCandidates() will still scrub the SDP, " +
+              "but the external STUN request and its gather stall are not suppressed.",
+          );
+        }
       }
+    } catch {
+      // Best-effort; stripSrflxCandidates() in createOffer() is the fallback.
     }
   }
 }

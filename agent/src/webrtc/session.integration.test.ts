@@ -53,23 +53,35 @@ test("setAnswer rejects on ICE-connect timeout and reports failure exactly once"
 
   const offerSdp = await session.createOffer();
 
-  // A syntactically valid answer SDP with a bogus ICE ufrag/pwd and no
-  // reachable candidates: setRemoteDescription() accepts it, but ICE can
-  // never actually establish a connection against it, so awaitConnected()
-  // is guaranteed to hit the timeout branch rather than "connected".
+  // A syntactically valid answer SDP with a bogus ICE ufrag/pwd and
+  // candidates rewritten to an unroutable address (TEST-NET-2, RFC 5737):
+  // setRemoteDescription() accepts it, ICE has *something* to try, but it
+  // can never actually reach that address, so awaitConnected() genuinely
+  // hits the timeout branch rather than short-circuiting through the
+  // immediate "failed"/"closed" path (which is what stripping all
+  // a=candidate lines entirely was found to do instead).
   const bogusAnswer = offerSdp
     .replace(/a=setup:actpass/g, "a=setup:active")
     .replace(/o=- (\d+)/, "o=- $1")
     .replace(/a=ice-ufrag:\S+/g, "a=ice-ufrag:deadbeef")
     .replace(/a=ice-pwd:\S+/g, "a=ice-pwd:deadbeefdeadbeefdeadbeef")
-    .replace(/a=candidate:.*\r?\n/g, "")
+    .replace(/(a=candidate:\S+ \d+ udp \d+ )\S+/g, "$1198.51.100.9")
     .replace(/a=sendonly/g, "a=recvonly");
 
-  await assert.rejects(() => session.setAnswer(bogusAnswer));
+  await assert.rejects(
+    () => session.setAnswer(bogusAnswer),
+    /ICE did not connect within/,
+    "expected the timeout branch, not the failed/closed path",
+  );
 
   assert.equal(states.length, 1);
   assert.equal(states[0]?.active, false);
   assert.ok(states[0]?.error, "expected an error message on the failure state");
+  assert.match(
+    states[0]?.error ?? "",
+    /ICE did not connect within/,
+    "reported error should come from the timeout branch",
+  );
 
   // A subsequent close() must not fire onStateChange again — the failure
   // latch set by the timeout should still be in effect since setAnswer()
