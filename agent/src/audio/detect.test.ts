@@ -83,3 +83,24 @@ test("win: skips the Alternative name line, doesn't misread it as the device nam
     "CABLE Output (VB-Audio Virtual Cable)",
   );
 });
+
+test("win: finds CABLE Output in the newer no-section-headers ffmpeg format", () => {
+  // Verbatim (trimmed) output from a real N-120858 nightly ffmpeg build on
+  // Windows -- no "DirectShow audio/video devices" headers at all, each
+  // device tagged inline with "(audio)"/"(video)" instead.
+  const list = String.raw`[dshow @ 000002a3485f0480] "Integrated Camera" (video)
+[dshow @ 000002a3485f0480]   Alternative name "@device_pnp_\\?\usb#vid_5986&pid_215d&mi_00#6&2b7db935&1&0000#{65e8773d-8f56-11d0-a3b9-00a0c9223196}\global"
+[dshow @ 000002a3485f0480] "CABLE Output (VB-Audio Virtual Cable)" (audio)
+[dshow @ 000002a3485f0480]   Alternative name "@device_cm_{33D9A762-90C8-11D0-BD43-00A0C911CE86}\wave_{B67E7940-B840-46CB-975C-F921DCB89346}"
+[dshow @ 000002a3485f0480] "Microphone (Senary Audio)" (audio)
+[dshow @ 000002a3485f0480]   Alternative name "@device_cm_{33D9A762-90C8-11D0-BD43-00A0C911CE86}\wave_{4D4568B3-6047-46F2-942B-70411D412B75}"
+[dshow @ 000002a3485f0480] "Microphone Array (Senary Audio)" (audio)
+[dshow @ 000002a3485f0480]   Alternative name "@device_cm_{33D9A762-90C8-11D0-BD43-00A0C911CE86}\wave_{F169B923-6631-4F24-8167-A66D47CDD9DE}"`;
+  assert.equal(parseWindowsLoopbackName(list), "CABLE Output (VB-Audio Virtual Cable)");
+});
+
+test("win: newer format doesn't pick an audio-only device tagged (video) by mistake", () => {
+  const list = `[dshow @ 0x1] "CABLE Output (VB-Audio Virtual Cable)" (video)
+[dshow @ 0x1] "Microphone (Realtek Audio)" (audio)`;
+  assert.equal(parseWindowsLoopbackName(list), null);
+});

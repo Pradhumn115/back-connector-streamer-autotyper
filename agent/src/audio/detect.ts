@@ -64,9 +64,22 @@ const WINDOWS_LOOPBACK_PATTERNS = [
  * quoted name of a loopback-capable audio device (see
  * WINDOWS_LOOPBACK_PATTERNS), or null. Only the friendly-name line for each
  * device is considered -- ffmpeg also prints an "Alternative name" line
- * (an opaque device path) directly below it, which this skips by returning
- * on the first quoted match once inAudio is true rather than scanning every
- * quoted string in the section.
+ * (an opaque device path) directly below it, which this skips explicitly.
+ *
+ * Two ffmpeg dshow listing formats exist in the wild, and this handles both:
+ *  - Older builds group devices under "DirectShow video devices"/"DirectShow
+ *    audio devices" section headers, with no per-line audio/video marker.
+ *  - Newer builds (confirmed on an N-120858 nightly) print no section
+ *    headers at all -- every device line is tagged inline instead, e.g.
+ *    `"CABLE Output (VB-Audio Virtual Cable)" (audio)`. Relying on the old
+ *    section-header scan alone against this format means `inAudio` never
+ *    becomes true and detection always silently fails, regardless of
+ *    whether a matching device is actually present -- exactly what was
+ *    observed on a real Windows machine with VB-Cable installed and visible
+ *    in this exact listing.
+ * The inline `(audio)`/`(video)` tag, when present on a line, takes
+ * priority over the section-header state; the section-header scan is the
+ * fallback for older ffmpeg builds that never print an inline tag.
  */
 export function parseWindowsLoopbackName(listOutput: string): string | null {
   let inAudio = false;
@@ -79,10 +92,12 @@ export function parseWindowsLoopbackName(listOutput: string): string | null {
       inAudio = false;
       continue;
     }
-    if (!inAudio) continue;
     if (/Alternative name/i.test(line)) continue;
     const m = line.match(/"([^"]+)"/);
     if (!m) continue;
+    const inlineTag = line.match(/\((audio|video)\)\s*$/i);
+    const isAudio = inlineTag ? inlineTag[1].toLowerCase() === "audio" : inAudio;
+    if (!isAudio) continue;
     const name = m[1];
     if (WINDOWS_LOOPBACK_PATTERNS.some((p) => p.test(name))) {
       return name;
