@@ -11,9 +11,24 @@ test("caps fps for both tiers", () => {
   assert.match(buildVideoFilter(VIDEO_CODEC_BASELINE), /^fps=30,/);
 });
 
-test("the capped tier caps width and the uncapped tier doesn't scale at all", () => {
+test("each tier scales to its own width cap", () => {
   assert.match(buildVideoFilter(VIDEO_CODEC_BASELINE), /scale='min\(1280,/);
-  assert.doesNotMatch(buildVideoFilter(VIDEO_CODEC_HIGH), /scale=/);
+  // The high tier was uncapped until encoding a Retina desktop at native size
+  // (3456x2234 @60) was measured against the real screen device at speed=0.991x
+  // -- keeping up with nothing to spare, before CABAC was added to make the
+  // stream genuinely High profile. See VIDEO_CODEC_HIGH.maxWidth.
+  assert.match(buildVideoFilter(VIDEO_CODEC_HIGH), /scale='min\(1920,/);
+});
+
+/**
+ * buildVideoFilter still supports an uncapped tier (maxWidth: null), which
+ * crops to even dimensions instead of scaling. No tier ships that way today,
+ * so it is exercised directly rather than through one.
+ */
+test("an uncapped tier crops to even dimensions instead of scaling", () => {
+  const chain = buildVideoFilter({ ...VIDEO_CODEC_HIGH, maxWidth: null });
+  assert.doesNotMatch(chain, /scale=/);
+  assert.match(chain, /crop=trunc\(iw\/2\)\*2:trunc\(ih\/2\)\*2/);
 });
 
 /**

@@ -118,7 +118,12 @@ async function main(): Promise<void> {
       // realtime budget for 60fps. sliced-threads=0 is set alongside it so the
       // intent survives if the thread count is ever raised.
       "-threads", "1",
-      "-x264-params", "sliced-threads=0",
+      // Per-tier, because it carries more than the slicing switch: it is also
+      // what forces the encoder to actually emit the profile this tier's SDP
+      // advertises. See VideoCodecTier.x264Params -- `-profile:v` below is
+      // only a ceiling and will silently let ultrafast emit Constrained
+      // Baseline under a High label, which no browser will decode.
+      "-x264-params", tier.x264Params,
       // Bounded GOP -- one IDR per second of output.
       //
       // `-tune zerolatency` leaves the keyframe interval effectively

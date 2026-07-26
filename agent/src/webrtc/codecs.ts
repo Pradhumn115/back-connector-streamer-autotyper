@@ -26,6 +26,27 @@ export interface VideoCodecTier {
   /** ffmpeg `-level` value matching this tier's profile-level-id. */
   ffmpegLevel: string;
   /**
+   * Value for ffmpeg's `-x264-params`, which must make the encoder actually
+   * emit `ffmpegProfile` -- `-profile:v` alone does NOT guarantee it.
+   *
+   * `-profile:v` is a CEILING, not a floor: it forbids tools above the named
+   * profile but never enables any. `-preset ultrafast` disables CABAC and the
+   * 8x8 transform, so the bitstream uses nothing above Constrained Baseline
+   * and x264 writes profile_idc=66 into the SPS accordingly -- even when asked
+   * for High. Measured: ultrafast alone gives "Constrained Baseline", and
+   * ultrafast plus `cabac=1:8x8dct=1` gives "High".
+   *
+   * That mismatch is not cosmetic. The SDP offer advertises this tier's
+   * profile-level-id; the browser negotiates a decoder on that promise and
+   * then receives a stream whose SPS declares a different profile, so it
+   * rejects every frame and asks for a keyframe forever against a blank
+   * <video>. It broke identically on every OS, because it is purely an
+   * encoder-settings bug with nothing platform-specific about it.
+   *
+   * Also carries `sliced-threads=0`; see the encoder args in index.ts.
+   */
+  x264Params: string;
+  /**
    * Resolution cap (pixels wide) for this tier's ffmpeg encode, or `null`
    * for native/uncapped. Mirrors Classic capture's own `maxWidth` pattern
    * (see capture/ffmpeg.ts) via `-vf fps=N,scale='min(W,iw)':-2`.
@@ -75,7 +96,23 @@ export const VIDEO_CODEC_HIGH: VideoCodecTier = {
   }),
   ffmpegProfile: "high",
   ffmpegLevel: "5.2",
-  maxWidth: null,
+  // CABAC and the 8x8 transform are what make this stream genuinely High
+  // profile rather than Constrained Baseline wearing a High label -- see
+  // VideoCodecTier.x264Params.
+  x264Params: "sliced-threads=0:cabac=1:8x8dct=1",
+  // Capped rather than native.
+  //
+  // This tier used to run uncapped, which on a Retina display means encoding
+  // 3456x2234 at 60fps. Measured against the real screen device, that ran at
+  // speed=0.991x single-threaded -- i.e. exactly keeping up, with no margin
+  // for a busy moment -- before CABAC was added, and CABAC is not free. At
+  // 1920 the same encode leaves roughly 74% headroom, which is what makes an
+  // honest High-profile stream affordable at all.
+  //
+  // 1920 also matches Classic's own default cap (see index.ts's maxWidth), so
+  // the two transports no longer disagree about how much detail is worth
+  // sending, and 1920x1240@60 sits far inside level 5.2's limits.
+  maxWidth: 1920,
   maxFps: 60,
   maxBitrateKbps: 8000,
 };
@@ -109,6 +146,12 @@ export const VIDEO_CODEC_BASELINE: VideoCodecTier = {
   }),
   ffmpegProfile: "baseline",
   ffmpegLevel: "3.1",
+  // Deliberately NO cabac/8x8dct here, unlike the High tier: Baseline forbids
+  // both, so enabling them would push the bitstream above the profile this
+  // tier advertises -- the same class of mismatch, in the other direction.
+  // `-preset ultrafast` already produces exactly Constrained Baseline, so this
+  // tier's declared and actual profiles agree with no extra tools.
+  x264Params: "sliced-threads=0",
   maxWidth: 1280,
   maxFps: 30,
   maxBitrateKbps: 2500,
