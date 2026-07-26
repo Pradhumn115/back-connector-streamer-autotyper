@@ -76,6 +76,10 @@ export interface AudioStatus {
 export interface UseConnectionOptions {
   /** Called for every decoded audio frame (16 kHz mono PCM) from the agent. */
   onAudioFrame?: (frame: DecodedAudioFrame) => void;
+  /** Called when the agent sends a WebRTC SDP offer. */
+  onWebrtcOffer?: (sdp: string) => void;
+  /** Called when the agent reports a change in WebRTC session state. */
+  onWebrtcState?: (active: boolean, error?: string) => void;
 }
 
 export interface DiagnosticsState {
@@ -99,6 +103,9 @@ export interface UseConnection {
   send: (msg: ClientMessage) => void;
   setAudio: (enabled: boolean) => void;
   runDiagnostics: () => void;
+  startWebrtc: () => void;
+  stopWebrtc: () => void;
+  sendWebrtcAnswer: (sdp: string) => void;
 }
 
 const STORAGE_KEY = "bcsa.connect";
@@ -181,6 +188,10 @@ export function useConnection(opts: UseConnectionOptions = {}): UseConnection {
   // latest one without needing to re-open the connection.
   const onAudioFrameRef = useRef(opts.onAudioFrame);
   onAudioFrameRef.current = opts.onAudioFrame;
+  const onWebrtcOfferRef = useRef(opts.onWebrtcOffer);
+  onWebrtcOfferRef.current = opts.onWebrtcOffer;
+  const onWebrtcStateRef = useRef(opts.onWebrtcState);
+  onWebrtcStateRef.current = opts.onWebrtcState;
   const [autotype, setAutotype] = useState<AutotypeStatus>({
     done: 0,
     total: 0,
@@ -289,6 +300,12 @@ export function useConnection(opts: UseConnectionOptions = {}): UseConnection {
         break;
       case "agentError":
         setLastError(msg.message);
+        break;
+      case "webrtcOffer":
+        onWebrtcOfferRef.current?.(msg.sdp);
+        break;
+      case "webrtcState":
+        onWebrtcStateRef.current?.(msg.active, msg.error);
         break;
     }
   }, []);
@@ -508,6 +525,13 @@ export function useConnection(opts: UseConnectionOptions = {}): UseConnection {
     send({ type: "runDiagnostics" });
   }, [send]);
 
+  const startWebrtc = useCallback(() => send({ type: "startWebrtc" }), [send]);
+  const stopWebrtc = useCallback(() => send({ type: "stopWebrtc" }), [send]);
+  const sendWebrtcAnswer = useCallback(
+    (sdp: string) => send({ type: "webrtcAnswer", sdp }),
+    [send],
+  );
+
   // Clean up on unmount.
   useEffect(() => {
     return () => {
@@ -542,5 +566,8 @@ export function useConnection(opts: UseConnectionOptions = {}): UseConnection {
     send,
     setAudio,
     runDiagnostics,
+    startWebrtc,
+    stopWebrtc,
+    sendWebrtcAnswer,
   };
 }
