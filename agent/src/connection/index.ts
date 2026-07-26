@@ -222,6 +222,17 @@ export class ConnectionServer {
     });
 
     this.deps.capture.setInterval(SCREENSHOT_INTERVAL);
+    this.startCapture();
+  }
+
+  /**
+   * (Re)starts the Classic frame-capture loop with the standard forwarding
+   * callback. Used both on initial connect and to resume Classic capture
+   * after a WebRTC session stops it — `capture.start()` is idempotent-safe
+   * to call again (it just respawns ffmpeg), so this is also safe to call
+   * when capture is already running.
+   */
+  private startCapture(): void {
     this.deps.capture.start((image) => {
       if (this.controller?.readyState === this.controller?.OPEN) {
         const buf = encodeFrame(this.seq++, Date.now(), image.format, image.data);
@@ -244,6 +255,12 @@ export class ConnectionServer {
             });
             break;
           }
+          // Switching back from WebRTC leaves capture stopped (handleStartWebrtc
+          // called capture.stop()); setInterval() alone only restarts ffmpeg
+          // when capture is already running (see FfmpegCapture.setInterval),
+          // so it silently no-ops here otherwise, leaving Classic mode dead
+          // until a full reconnect. Explicitly restart it.
+          this.startCapture();
           this.deps.capture.setInterval(msg.intervalMs);
           break;
         case "mouse":

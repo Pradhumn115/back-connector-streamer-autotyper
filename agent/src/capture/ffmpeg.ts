@@ -4,7 +4,7 @@ import { FrameFormat } from "@bcsa/shared";
 import type { CapturedImage, FrameHandler, ScreenCapture } from "./index.js";
 
 export interface FfmpegCaptureOptions {
-  /** Max output width in pixels; height auto to keep aspect. Default 1440. */
+  /** Max output width in pixels; height auto to keep aspect. Default 1920. */
   maxWidth?: number;
   /** MJPEG quality 2 (best) .. 31 (worst). Default 6. */
   quality?: number;
@@ -37,7 +37,7 @@ export class FfmpegCapture implements ScreenCapture {
   private readonly quality: number;
 
   constructor(opts: FfmpegCaptureOptions = {}) {
-    this.maxWidth = opts.maxWidth ?? 1440;
+    this.maxWidth = opts.maxWidth ?? 1920;
     this.quality = opts.quality ?? 6;
   }
 

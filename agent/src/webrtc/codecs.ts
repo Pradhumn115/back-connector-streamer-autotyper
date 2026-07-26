@@ -1,44 +1,51 @@
 import { RTCRtpCodecParameters } from "werift";
 
 /**
- * H264 constrained-baseline (profile-level-id 42e03c), packetization-mode 1 —
- * the combination every Chromium/Firefox/Safari WebRTC stack accepts, and what
- * ffmpeg's libx264 with `-profile:v baseline -level 6.0` produces.
+ * H264 High profile, Level 5.2 (profile-level-id 640034), packetization-mode 1.
  *
- * The level byte (the last two hex digits) MUST match the `-level` flag given
- * to ffmpeg in index.ts's webrtcFfmpegArgs.video. Level 3.1 (hex 1f) was
- * tried first but its 108,000 MB/s macroblock-rate limit is well below what's
- * needed to encode a real screen capture — libx264 doesn't error out on this,
- * it just warns and hangs forever without ever emitting RTP output. Level 4.0
- * (hex 28) fixed that for 30fps but its 245,760 MB/s macroblock-rate budget
- * caps far short of 120fps at real capture resolutions. Level 5.1 (hex 33)
- * was tried next but this machine's actual native avfoundation capture
- * resolution — 3456x2234 (Retina/HiDPI), not a smaller reference case — needs
+ * Every earlier round of this fix (levels 3.1 -> 4.0 -> 5.1 -> 6.0) tuned the
+ * macroblock-rate budget against libx264's own encode-side leniency (it warns
+ * but still emits packets when nominally over budget) without ever checking
+ * whether a REAL WebRTC decoder — Chrome — actually supports the declared
+ * profile/level at all. It doesn't: querying Chrome's own capability API
+ * directly,
+ *
+ *   RTCRtpSender.getCapabilities('video').codecs
+ *     .filter(c => c.mimeType === 'video/H264').map(c => c.sdpFmtpLine)
+ *
+ * returns exactly seven H.264 variants, none above level 5.2, and NONE at
+ * level 6.0 in any profile. Since the previous SDP offer declared
+ * profile-level-id=42e03c (Constrained Baseline, level 6.0) — a combination
+ * Chrome has never heard of — Chrome's answer always came back with zero
+ * codecs for the video m-line and werift's setRemoteDescription() threw
+ * "negotiate codecs failed." every time. This was a hard, deterministic
+ * negotiation failure, not a resource/hang issue like the earlier rounds.
+ *
+ * profile-level-id=640034 is the highest level+profile combination Chrome's
+ * capabilities list actually contains: profile_idc 0x64 = High profile,
+ * profile_iop 0x00 = no constraint flags set, level_idc 0x34 = 52 decimal =
+ * level 5.2 (52 = 3*16 + 4 = 0x34). The level byte (the last two hex digits)
+ * MUST match the `-level` flag given to ffmpeg in index.ts's
+ * webrtcFfmpegArgs.video, and the profile byte must match `-profile:v`.
+ *
+ * Level 5.2's MaxMBPS is 2,073,600 MB/s. This machine's real native
+ * avfoundation capture resolution — 3456x2234 (Retina/HiDPI) — needs
  * ceil(3456/16) x ceil(2234/16) = 216 x 140 = 30,240 MB/frame, and at 120fps
- * that's 30,240 x 120 = 3,628,800 MB/s, which *exceeds* level 5.1's 983,040
- * MB/s MaxMBPS budget by ~3.7x (libx264 printed `MB rate (3628800) > level
- * limit (983040)` and encoded anyway, but the SDP would have declared a level
- * the stream doesn't actually conform to).
- *
- * Level 6.0 (decimal level_idc 60 -> hex 3c; 60 = 3*16 + 12 = 0x3c) raises
- * MaxMBPS to 4,177,920 MB/s, comfortably covering the 3,628,800 MB/s required
- * at 3456x2234@120fps (~15% margin) and MaxFS to 139,264 MB (far above the
- * 30,240 MB/frame needed), while remaining a level every modern WebRTC
- * decoder supports. Since this app controls both the offering/encoding side
- * and the SDP declaration, there's no compatibility downside to using it.
- * This was verified empirically (not just via the level-limits arithmetic) by
- * running the exact ffmpeg command index.ts constructs — targeting this
- * machine's real native 3456x2234 capture resolution, no `-vf scale` — against
- * a UDP listener at `-loglevel info`/`-stats` and confirming both real RTP
- * packets flow at a genuine (speed=1x) 120fps AND that the `MB rate > level
- * limit` warning is gone at level 6.0 — see index.ts's -level comment and the
- * task11 fix report for the packet counts and full ffmpeg output observed.
+ * that's 30,240 x 120 = 3,628,800 MB/s, which nominally exceeds level 5.2's
+ * budget by ~1.75x. As with the earlier over-budget levels, libx264 encodes
+ * anyway and only prints an advisory `MB rate > level limit` warning — but
+ * unlike the earlier rounds, this was NOT taken on faith: real-Chrome
+ * empirical testing (see index.ts's -level comment and the task11 fix
+ * report) confirmed both that negotiation now succeeds and that Chrome's
+ * decoder actually decodes real, increasing frames at the fps this app
+ * settled on for WebRTC — see MAX_WEBRTC_FPS in index.ts for the ceiling
+ * that was found safe and why.
  */
 export const VIDEO_CODEC = new RTCRtpCodecParameters({
   mimeType: "video/H264",
   clockRate: 90000,
   payloadType: 96,
-  parameters: "profile-level-id=42e03c;packetization-mode=1;level-asymmetry-allowed=1",
+  parameters: "profile-level-id=640034;packetization-mode=1;level-asymmetry-allowed=1",
   rtcpFeedback: [
     { type: "ccm", parameter: "fir" },
     { type: "nack" },
