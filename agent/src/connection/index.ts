@@ -18,6 +18,7 @@ import { runAutotype, type TypingBackend } from "../autotyper/index.js";
 import type { InputLockManager } from "../inputlock/index.js";
 import { runDiagnostics } from "../diagnostics/index.js";
 import { WebrtcSession } from "../webrtc/session.js";
+import type { VideoCodecTier } from "../webrtc/codecs.js";
 
 export interface ServerDeps {
   secret: string;
@@ -35,7 +36,8 @@ export interface ServerDeps {
   refreshHz: number;
   /** ffmpeg args (input + RTP output) for the WebRTC video/audio relays. */
   webrtcFfmpegArgs: {
-    video: (port: number) => string[];
+    /** Video args depend on which codec tier negotiation picked (see webrtc/codecs.ts). */
+    video: (tier: VideoCodecTier, port: number) => string[];
     audio: (port: number) => string[];
   };
 }
@@ -425,7 +427,7 @@ export class ConnectionServer {
     this.deps.capture.stop();
     this.deps.audio.stop();
     const session: WebrtcSession = new WebrtcSession({
-      videoFfmpegArgs: this.deps.webrtcFfmpegArgs.video,
+      videoFfmpegArgsFor: this.deps.webrtcFfmpegArgs.video,
       audioFfmpegArgs: this.deps.webrtcFfmpegArgs.audio,
       onStateChange: (active, error) => {
         // Guard against a stale session's callback firing after it was

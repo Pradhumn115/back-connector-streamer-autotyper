@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { RTCPeerConnection } from "werift";
 import { WebrtcSession } from "./session.js";
-import { VIDEO_CODEC, AUDIO_CODEC } from "./codecs.js";
+import { VIDEO_CODEC_TIERS, VIDEO_CODEC_BASELINE, AUDIO_CODEC } from "./codecs.js";
 
 test("createOffer/setAnswer establishes a connection and relays RTP", async () => {
   const states: Array<{ active: boolean; error?: string }> = [];
@@ -12,7 +12,7 @@ test("createOffer/setAnswer establishes a connection and relays RTP", async () =
     // catches/logs that failure internally, so the test still passes
     // without ffmpeg on PATH. These args are otherwise inert: nullsrc/
     // anullsrc + `-f null -` never actually emit RTP.
-    videoFfmpegArgs: () => ["-f", "lavfi", "-i", "nullsrc", "-f", "null", "-"],
+    videoFfmpegArgsFor: () => ["-f", "lavfi", "-i", "nullsrc", "-f", "null", "-"],
     audioFfmpegArgs: () => ["-f", "lavfi", "-i", "anullsrc", "-f", "null", "-"],
     onStateChange: (active, error) => states.push({ active, error }),
   });
@@ -21,7 +21,7 @@ test("createOffer/setAnswer establishes a connection and relays RTP", async () =
 
   // Stand-in "browser" peer: recvonly, using the same codecs the agent offers.
   const browserPc = new RTCPeerConnection({
-    codecs: { video: [VIDEO_CODEC], audio: [AUDIO_CODEC] },
+    codecs: { video: VIDEO_CODEC_TIERS.map((tier) => tier.codec), audio: [AUDIO_CODEC] },
   });
   await browserPc.setRemoteDescription({ type: "offer", sdp: offerSdp });
   const answer = await browserPc.createAnswer();
@@ -43,7 +43,7 @@ test("createOffer/setAnswer establishes a connection and relays RTP", async () =
 test("setAnswer rejects on ICE-connect timeout and reports failure exactly once", async () => {
   const states: Array<{ active: boolean; error?: string }> = [];
   const session = new WebrtcSession({
-    videoFfmpegArgs: () => ["-f", "lavfi", "-i", "nullsrc", "-f", "null", "-"],
+    videoFfmpegArgsFor: () => ["-f", "lavfi", "-i", "nullsrc", "-f", "null", "-"],
     audioFfmpegArgs: () => ["-f", "lavfi", "-i", "anullsrc", "-f", "null", "-"],
     onStateChange: (active, error) => states.push({ active, error }),
     // Short-circuit the 5s production timeout so this test doesn't have to
@@ -93,7 +93,7 @@ test("setAnswer rejects on ICE-connect timeout and reports failure exactly once"
 
 test("createOffer's SDP declares Opus per RFC 7587 (rtpmap channels=2, fmtp stereo=0)", async () => {
   const session = new WebrtcSession({
-    videoFfmpegArgs: () => ["-f", "lavfi", "-i", "nullsrc", "-f", "null", "-"],
+    videoFfmpegArgsFor: () => ["-f", "lavfi", "-i", "nullsrc", "-f", "null", "-"],
     audioFfmpegArgs: () => ["-f", "lavfi", "-i", "anullsrc", "-f", "null", "-"],
     onStateChange: () => {},
   });
@@ -113,10 +113,68 @@ test("createOffer's SDP declares Opus per RFC 7587 (rtpmap channels=2, fmtp ster
   session.close();
 });
 
+test("a browser that only supports the baseline tier still negotiates and gets baseline ffmpeg args", async () => {
+  const videoArgsCalls: Array<{ profile: string; level: string; maxWidth: number | null }> = [];
+  const session = new WebrtcSession({
+    videoFfmpegArgsFor: (tier) => {
+      videoArgsCalls.push({
+        profile: tier.ffmpegProfile,
+        level: tier.ffmpegLevel,
+        maxWidth: tier.maxWidth,
+      });
+      return ["-f", "lavfi", "-i", "nullsrc", "-f", "null", "-"];
+    },
+    audioFfmpegArgs: () => ["-f", "lavfi", "-i", "anullsrc", "-f", "null", "-"],
+    onStateChange: () => {},
+  });
+
+  const offerSdp = await session.createOffer();
+  // The offer lists both tiers; confirm both payload types actually appear
+  // (i.e. this is a real multi-codec offer, not an accidental single one).
+  assert.match(offerSdp, /a=rtpmap:96 H264\/90000/);
+  assert.match(offerSdp, /a=rtpmap:97 H264\/90000/);
+
+  // Stand-in "browser" peer that generates a structurally/ICE-wise valid
+  // answer. Its own `codecs` config doesn't actually matter here: werift's
+  // createAnswer() (unlike a real browser decoder) just echoes back
+  // whichever codecs the offer listed, regardless of what's configured
+  // locally -- confirmed empirically, this is a fake-peer limitation, not
+  // real negotiation behavior. So the answer is hand-edited below to strip
+  // the high-tier payload type (96), simulating what a real Safari answer
+  // actually looks like: only the one codec its decoder supports.
+  const browserPc = new RTCPeerConnection({
+    codecs: { video: [VIDEO_CODEC_BASELINE.codec], audio: [AUDIO_CODEC] },
+  });
+  await browserPc.setRemoteDescription({ type: "offer", sdp: offerSdp });
+  const answer = await browserPc.createAnswer();
+  await browserPc.setLocalDescription(answer);
+  const baselineOnlyAnswerSdp = browserPc
+    .localDescription!.sdp.replace(
+      "m=video 9 UDP/TLS/RTP/SAVPF 96 97",
+      "m=video 9 UDP/TLS/RTP/SAVPF 97",
+    )
+    .split("\r\n")
+    .filter((line) => !line.includes(":96 "))
+    .join("\r\n");
+  assert.doesNotMatch(baselineOnlyAnswerSdp, /:96 /, "test setup: 96 must be fully stripped");
+
+  await session.setAnswer(baselineOnlyAnswerSdp);
+
+  assert.equal(videoArgsCalls.length, 1);
+  assert.deepEqual(videoArgsCalls[0], {
+    profile: VIDEO_CODEC_BASELINE.ffmpegProfile,
+    level: VIDEO_CODEC_BASELINE.ffmpegLevel,
+    maxWidth: VIDEO_CODEC_BASELINE.maxWidth,
+  });
+
+  session.close();
+  await browserPc.close();
+});
+
 test("setAnswer rejects immediately on codec-incompatible answer and reports failure exactly once", async () => {
   const states: Array<{ active: boolean; error?: string }> = [];
   const session = new WebrtcSession({
-    videoFfmpegArgs: () => ["-f", "lavfi", "-i", "nullsrc", "-f", "null", "-"],
+    videoFfmpegArgsFor: () => ["-f", "lavfi", "-i", "nullsrc", "-f", "null", "-"],
     audioFfmpegArgs: () => ["-f", "lavfi", "-i", "anullsrc", "-f", "null", "-"],
     onStateChange: (active, error) => states.push({ active, error }),
   });
@@ -131,7 +189,7 @@ test("setAnswer rejects immediately on codec-incompatible answer and reports fai
   // setAnswer() catch branch exists for), as opposed to the ICE-timeout
   // path covered by the test above.
   const browserPc = new RTCPeerConnection({
-    codecs: { video: [VIDEO_CODEC], audio: [AUDIO_CODEC] },
+    codecs: { video: VIDEO_CODEC_TIERS.map((tier) => tier.codec), audio: [AUDIO_CODEC] },
   });
   await browserPc.setRemoteDescription({ type: "offer", sdp: offerSdp });
   const answer = await browserPc.createAnswer();

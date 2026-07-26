@@ -9,6 +9,7 @@ import { InputController } from "./input/index.js";
 import { createNutBackend } from "./input/nutBackend.js";
 import { createNutTypingBackend } from "./autotyper/nutTyping.js";
 import { ConnectionServer } from "./connection/index.js";
+import type { VideoCodecTier } from "./webrtc/codecs.js";
 import { AudioCapture, detectLoopbackDevice } from "./audio/index.js";
 import { InputLockManager } from "./inputlock/index.js";
 import { createInputLockBackend } from "./inputlock/backends.js";
@@ -49,48 +50,32 @@ async function main(): Promise<void> {
   // and audio/detect.ts) — only the output tail differs (RTP + libx264/libopus
   // instead of MJPEG-over-pipe/raw-PCM-over-pipe).
   //
-  // Target the agent's real display refresh rate, same as Classic mode's
-  // client-side intervalForMode()/MAX_FPS in ScreenView.tsx: clamp
-  // Math.round(refreshHz) to [1, MAX_WEBRTC_FPS].
-  //
-  // Every earlier round of level-bumping here (3.1 -> 4.0 -> 5.1 -> 6.0)
-  // was tuned against libx264's own leniency (it warns but keeps encoding
-  // when nominally over a level's macroblock-rate budget) without checking
-  // whether a real WebRTC decoder — Chrome — supports the declared level at
-  // all. It doesn't support level 6.0 in any profile: Chrome's own
-  // RTCRtpSender.getCapabilities('video') capability list tops out at
-  // profile-level-id 640034 (High profile, level 5.2), so the level 6.0
-  // offer was being answered with zero video codecs and
-  // setRemoteDescription() failed with "negotiate codecs failed." every
-  // time — a hard, deterministic negotiation failure, not the
-  // hang/no-packets failure mode of the earlier too-low levels. See
-  // webrtc/codecs.ts's VIDEO_CODEC comment for the full profile/level
-  // arithmetic and Chrome capability query output.
-  //
-  // -profile:v/-level below were changed to high/5.2 to match. Level 5.2's
-  // MaxMBPS (2,073,600 MB/s) is nominally ~1.75x short of the 3,628,800
-  // MB/s this machine's native 3456x2234@120fps capture would need — but as
-  // with the earlier over-budget levels, libx264 encodes anyway (advisory
-  // warning only). MAX_WEBRTC_FPS below was set from a real-Chrome
-  // empirical test of decoded output (not just packet flow) — see the
-  // task11 fix report for the getStats() framesDecoded numbers that
-  // determined this ceiling.
-  const MAX_WEBRTC_FPS = 60;
-  const WEBRTC_VIDEO_FPS = Math.min(MAX_WEBRTC_FPS, Math.max(1, Math.round(refreshHz)));
+  // The video encode is codec-tier-adaptive (see webrtc/codecs.ts's
+  // VIDEO_CODEC_TIERS): the offer lists multiple H.264 profile/level
+  // combinations, the browser's SDP answer picks whichever one its decoder
+  // actually supports, and WebrtcSession (session.ts's setAnswer()) calls
+  // videoFfmpegArgsFor() with the winning tier only after that's known — so
+  // the ffmpeg command line's -profile:v/-level/resolution-cap/fps-cap must
+  // all come from the tier, not be hardcoded here. This replaced an earlier
+  // single-fixed-codec design that kept breaking one browser or another:
+  // raising the level (3.1 -> 4.0 -> 5.1 -> 6.0, then High/5.2) chased this
+  // machine's native capture resolution, but level 6.0 isn't supported by
+  // Chrome's WebRTC decoder at all (confirmed via
+  // RTCRtpSender.getCapabilities('video')), and level 5.2 (Chrome's own
+  // ceiling) isn't in Safari's decoder capability list either — there's no
+  // single level every browser supports above 3.1. Offering both tiers
+  // lets each browser negotiate the best one it actually supports.
   const webrtcFfmpegArgs = {
-    video: (port: number) => [
+    video: (tier: VideoCodecTier, port: number) => [
       "-hide_banner",
       // "warning" (not "error") deliberately: this is the diagnostic level
       // that surfaces libx264's `MB rate (...) > level limit (...)` warning
-      // if a future resolution/fps/level combination ever becomes
-      // non-conformant again (see the -level comment below) — "error" would
-      // silently swallow that signal, which is exactly what happened before
-      // this was caught by empirical UDP-packet verification rather than by
-      // the logs. Verified quiet in the healthy case: running this exact
-      // command at level 6.0 against the real capture produced no warning
-      // spam, only normal per-frame -stats output.
+      // if a tier's resolution/fps/level combination is ever
+      // non-conformant — "error" would silently swallow that signal, which
+      // is exactly what happened before this was caught by empirical
+      // UDP-packet verification rather than by the logs.
       "-loglevel", "warning",
-      ...screenCaptureInputArgs(WEBRTC_VIDEO_FPS),
+      ...screenCaptureInputArgs(tier.maxFps),
       // Screen-capture inputs deliver packed RGB/422 formats (gdigrab->bgra,
       // x11grab->bgr0, avfoundation->uyvy422). Without an explicit pix_fmt,
       // ffmpeg's automatic negotiation picks yuv444p/yuv422p, neither of
@@ -98,28 +83,21 @@ async function main(): Promise<void> {
       "-pix_fmt", "yuv420p",
       // Screen-capture inputs (especially avfoundation) ignore -framerate and
       // emit as fast as possible (see capture/ffmpeg.ts); -vf fps=... is what
-      // actually caps the output rate, mirroring Classic capture's use of it.
-      "-vf", `fps=${WEBRTC_VIDEO_FPS}`,
+      // actually caps the output rate, mirroring Classic capture's use of
+      // it. scale=... only applies when the tier declares a maxWidth (the
+      // baseline/3.1 tier needs it to stay inside its macroblock budget;
+      // the high/5.2 tier runs uncapped at native resolution) — mirrors
+      // Classic capture's own `maxWidth` pattern in capture/ffmpeg.ts.
+      "-vf",
+      tier.maxWidth
+        ? `fps=${tier.maxFps},scale='min(${tier.maxWidth},iw)':-2`
+        : `fps=${tier.maxFps}`,
       "-c:v", "libx264",
-      "-profile:v", "high",
-      // Must stay in sync with the profile-level-id byte pair in
-      // webrtc/codecs.ts's VIDEO_CODEC (profile 0x64 = High, level 0x34 =
-      // level 5.2). Levels 3.1/4.0/5.1/6.0 were all tried in earlier rounds
-      // of this fix and tuned purely against libx264's encode-side
-      // leniency (it warns but keeps producing RTP packets when nominally
-      // over a level's macroblock-rate budget) — but level 6.0, in ANY
-      // profile, isn't supported by Chrome's WebRTC decoder at all,
-      // confirmed via Chrome's own RTCRtpSender.getCapabilities('video')
-      // capability list, which tops out at High profile / level 5.2
-      // (profile-level-id 640034). Offering level 6.0 made Chrome answer
-      // with zero video codecs and werift's setRemoteDescription() threw
-      // "negotiate codecs failed." deterministically, every time. Level 5.2
-      // is the highest level+profile Chrome actually supports, so it's what
-      // this app declares now — see codecs.ts's VIDEO_CODEC comment for the
-      // full arithmetic and the task11 fix report for the real-Chrome
-      // decode verification (framesDecoded increasing over time) and the
-      // MAX_WEBRTC_FPS ceiling that verification settled on.
-      "-level", "5.2",
+      // Must stay in sync with the profile-level-id byte pair of this
+      // tier's codec in webrtc/codecs.ts (e.g. profile 0x64 = High, level
+      // 0x34 = level 5.2 for VIDEO_CODEC_HIGH).
+      "-profile:v", tier.ffmpegProfile,
+      "-level", tier.ffmpegLevel,
       "-preset", "ultrafast",
       "-tune", "zerolatency",
       "-f", "rtp",

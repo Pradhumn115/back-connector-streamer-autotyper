@@ -1,6 +1,9 @@
 import { RTCPeerConnection, MediaStreamTrack } from "werift";
-import { VIDEO_CODEC, AUDIO_CODEC } from "./codecs.js";
+import { VIDEO_CODEC_TIERS, AUDIO_CODEC, type VideoCodecTier } from "./codecs.js";
 import { RtpRelay } from "./rtpRelay.js";
+
+/** Return type of `RTCPeerConnection.addTransceiver()` -- werift doesn't export the class name cleanly off its root barrel. */
+type Transceiver = ReturnType<RTCPeerConnection["addTransceiver"]>;
 
 const ICE_CONNECT_TIMEOUT_MS = 5000;
 
@@ -22,9 +25,16 @@ function stripSrflxCandidates(sdp: string): string {
 }
 
 export interface WebrtcSessionDeps {
-  /** Full ffmpeg args (input + `-f rtp rtp://127.0.0.1:<port>` output) for video. */
-  videoFfmpegArgs: (port: number) => string[];
-  /** Same, for audio. */
+  /**
+   * Full ffmpeg args (input + `-f rtp rtp://127.0.0.1:<port>` output) for
+   * video, given the codec tier that actually won negotiation (see
+   * codecs.ts's VIDEO_CODEC_TIERS) and the local RTP port to send to.
+   * Called from setAnswer(), after setRemoteDescription() resolves --
+   * unlike audio, the video encode can't start until negotiation reveals
+   * which tier the browser answered with.
+   */
+  videoFfmpegArgsFor: (tier: VideoCodecTier, port: number) => string[];
+  /** Same, for audio -- codec is fixed (Opus), so this starts at offer-time. */
   audioFfmpegArgs: (port: number) => string[];
   /** Called whenever the session's active/error state changes. */
   onStateChange: (active: boolean, error?: string) => void;
@@ -45,7 +55,9 @@ export class WebrtcSession {
   private readonly pc: RTCPeerConnection;
   private readonly videoTrack: MediaStreamTrack;
   private readonly audioTrack: MediaStreamTrack;
-  private readonly videoRelay: RtpRelay;
+  private readonly videoTransceiver: Transceiver;
+  /** Constructed lazily in setAnswer(), once negotiation reveals which codec tier won. */
+  private videoRelay: RtpRelay | null = null;
   private readonly audioRelay: RtpRelay;
   private closed = false;
   /** Set once awaitConnected() has already reported a failure, so close() doesn't double-report. */
@@ -55,14 +67,13 @@ export class WebrtcSession {
   constructor(private readonly deps: WebrtcSessionDeps) {
     this.iceConnectTimeoutMs = deps.iceConnectTimeoutMs ?? ICE_CONNECT_TIMEOUT_MS;
     this.pc = new RTCPeerConnection({
-      codecs: { video: [VIDEO_CODEC], audio: [AUDIO_CODEC] },
+      codecs: { video: VIDEO_CODEC_TIERS.map((tier) => tier.codec), audio: [AUDIO_CODEC] },
     });
     this.videoTrack = new MediaStreamTrack({ kind: "video" });
     this.audioTrack = new MediaStreamTrack({ kind: "audio" });
-    this.pc.addTransceiver(this.videoTrack, { direction: "sendonly" });
+    this.videoTransceiver = this.pc.addTransceiver(this.videoTrack, { direction: "sendonly" });
     this.pc.addTransceiver(this.audioTrack, { direction: "sendonly" });
     this.suppressStun();
-    this.videoRelay = new RtpRelay("video", deps.videoFfmpegArgs);
     this.audioRelay = new RtpRelay("audio", deps.audioFfmpegArgs);
 
     // Long-lived watcher: reports a drop that happens *after* the initial
@@ -78,18 +89,25 @@ export class WebrtcSession {
     });
   }
 
-  /** Starts both RTP relays and returns the SDP offer to send to the client. */
+  /**
+   * Starts the audio relay (its codec is fixed, so it can start
+   * immediately) and returns the SDP offer to send to the client. The video
+   * relay isn't started here -- which ffmpeg args it needs depends on which
+   * codec tier the browser's answer negotiates, so it's deferred to
+   * setAnswer().
+   */
   async createOffer(): Promise<string> {
-    await Promise.all([
-      this.videoRelay.start(this.videoTrack),
-      this.audioRelay.start(this.audioTrack),
-    ]);
+    await this.audioRelay.start(this.audioTrack);
     const offer = await this.pc.createOffer();
     await this.pc.setLocalDescription(offer);
     return stripSrflxCandidates(this.pc.localDescription!.sdp);
   }
 
-  /** Applies the client's answer and waits for ICE to actually connect. */
+  /**
+   * Applies the client's answer, starts the video relay with the ffmpeg
+   * args matching whichever codec tier actually won negotiation, and waits
+   * for ICE to actually connect.
+   */
   async setAnswer(sdp: string): Promise<void> {
     try {
       await this.pc.setRemoteDescription({ type: "answer", sdp });
@@ -103,6 +121,22 @@ export class WebrtcSession {
       this.reportFailure(`WebRTC setAnswer failed: ${err instanceof Error ? err.message : String(err)}`);
       throw err;
     }
+
+    // transceiver.codecs holds the negotiated intersection after
+    // setRemoteDescription() resolves (confirmed via werift's
+    // rtpTransceiver.d.ts and by instrumenting transceiverManager.js's
+    // setRemoteRTP directly) -- match its payloadType back to one of our
+    // offered tiers to learn which one the browser actually picked.
+    const negotiatedPayloadType = this.videoTransceiver.codecs[0]?.payloadType;
+    const tier = VIDEO_CODEC_TIERS.find((t) => t.codec.payloadType === negotiatedPayloadType);
+    if (!tier) {
+      const err = `WebRTC setAnswer failed: no known video codec tier negotiated (payloadType=${String(negotiatedPayloadType)})`;
+      this.reportFailure(err);
+      throw new Error(err);
+    }
+    this.videoRelay = new RtpRelay("video", (port) => this.deps.videoFfmpegArgsFor(tier, port));
+    await this.videoRelay.start(this.videoTrack);
+
     await this.awaitConnected();
     // A successful connect means any earlier failure latch (e.g. a
     // transient "disconnected" blip before the first "connected") no
@@ -114,7 +148,7 @@ export class WebrtcSession {
 
   close(): void {
     this.closed = true;
-    this.videoRelay.stop();
+    this.videoRelay?.stop();
     this.audioRelay.stop();
     void this.pc.close();
   }

@@ -1,58 +1,106 @@
 import { RTCRtpCodecParameters } from "werift";
 
 /**
- * H264 High profile, Level 5.2 (profile-level-id 640034), packetization-mode 1.
+ * A codec choice offered to the browser, plus everything needed to encode
+ * ffmpeg output that actually conforms to it. WebRTC codec negotiation is
+ * answerer's-choice: the offer lists every tier below (payloadType-distinct
+ * `a=rtpmap`/`a=fmtp` entries under the same `m=video` line, in preference
+ * order), and each browser's SDP answer keeps only the payload type(s) its
+ * decoder actually supports. werift's transceiver.codecs getter reflects
+ * that intersection after setRemoteDescription() resolves — see
+ * session.ts's setAnswer(), which reads it to pick the matching tier here
+ * before starting the video ffmpeg encode.
  *
- * Every earlier round of this fix (levels 3.1 -> 4.0 -> 5.1 -> 6.0) tuned the
- * macroblock-rate budget against libx264's own encode-side leniency (it warns
- * but still emits packets when nominally over budget) without ever checking
- * whether a REAL WebRTC decoder — Chrome — actually supports the declared
- * profile/level at all. It doesn't: querying Chrome's own capability API
- * directly,
- *
- *   RTCRtpSender.getCapabilities('video').codecs
- *     .filter(c => c.mimeType === 'video/H264').map(c => c.sdpFmtpLine)
- *
- * returns exactly seven H.264 variants, none above level 5.2, and NONE at
- * level 6.0 in any profile. Since the previous SDP offer declared
- * profile-level-id=42e03c (Constrained Baseline, level 6.0) — a combination
- * Chrome has never heard of — Chrome's answer always came back with zero
- * codecs for the video m-line and werift's setRemoteDescription() threw
- * "negotiate codecs failed." every time. This was a hard, deterministic
- * negotiation failure, not a resource/hang issue like the earlier rounds.
- *
- * profile-level-id=640034 is the highest level+profile combination Chrome's
- * capabilities list actually contains: profile_idc 0x64 = High profile,
- * profile_iop 0x00 = no constraint flags set, level_idc 0x34 = 52 decimal =
- * level 5.2 (52 = 3*16 + 4 = 0x34). The level byte (the last two hex digits)
- * MUST match the `-level` flag given to ffmpeg in index.ts's
- * webrtcFfmpegArgs.video, and the profile byte must match `-profile:v`.
- *
- * Level 5.2's MaxMBPS is 2,073,600 MB/s. This machine's real native
- * avfoundation capture resolution — 3456x2234 (Retina/HiDPI) — needs
- * ceil(3456/16) x ceil(2234/16) = 216 x 140 = 30,240 MB/frame, and at 120fps
- * that's 30,240 x 120 = 3,628,800 MB/s, which nominally exceeds level 5.2's
- * budget by ~1.75x. As with the earlier over-budget levels, libx264 encodes
- * anyway and only prints an advisory `MB rate > level limit` warning — but
- * unlike the earlier rounds, this was NOT taken on faith: real-Chrome
- * empirical testing (see index.ts's -level comment and the task11 fix
- * report) confirmed both that negotiation now succeeds and that Chrome's
- * decoder actually decodes real, increasing frames at the fps this app
- * settled on for WebRTC — see MAX_WEBRTC_FPS in index.ts for the ceiling
- * that was found safe and why.
+ * This is why a single fixed codec kept breaking one browser or another:
+ * Chrome's RTCRtpSender.getCapabilities('video') (queried live) tops out at
+ * High profile/Level 5.2 (640034) and Safari doesn't support that level at
+ * all, but every major browser (Chrome, Safari, Firefox, Edge) supports
+ * Constrained Baseline/Level 3.1 (42e01f) -- the WebRTC spec's "mandatory
+ * to implement" H.264 combination. Offering both lets capable browsers get
+ * the higher-quality/higher-fps encode while everything else still works.
  */
-export const VIDEO_CODEC = new RTCRtpCodecParameters({
-  mimeType: "video/H264",
-  clockRate: 90000,
-  payloadType: 96,
-  parameters: "profile-level-id=640034;packetization-mode=1;level-asymmetry-allowed=1",
-  rtcpFeedback: [
-    { type: "ccm", parameter: "fir" },
-    { type: "nack" },
-    { type: "nack", parameter: "pli" },
-    { type: "goog-remb" },
-  ],
-});
+export interface VideoCodecTier {
+  codec: RTCRtpCodecParameters;
+  /** ffmpeg `-profile:v` value matching this tier's profile-level-id. */
+  ffmpegProfile: string;
+  /** ffmpeg `-level` value matching this tier's profile-level-id. */
+  ffmpegLevel: string;
+  /**
+   * Resolution cap (pixels wide) for this tier's ffmpeg encode, or `null`
+   * for native/uncapped. Mirrors Classic capture's own `maxWidth` pattern
+   * (see capture/ffmpeg.ts) via `-vf fps=N,scale='min(W,iw)':-2`.
+   */
+  maxWidth: number | null;
+  /** fps cap for this tier's ffmpeg encode. */
+  maxFps: number;
+}
+
+/**
+ * High profile, Level 5.2 (profile-level-id 640034) -- the highest
+ * level+profile Chrome's own WebRTC decoder actually supports (confirmed
+ * via RTCRtpSender.getCapabilities('video')). Not supported by Safari, so
+ * this tier only wins negotiation on browsers that advertise it.
+ */
+export const VIDEO_CODEC_HIGH: VideoCodecTier = {
+  codec: new RTCRtpCodecParameters({
+    mimeType: "video/H264",
+    clockRate: 90000,
+    payloadType: 96,
+    parameters: "profile-level-id=640034;packetization-mode=1;level-asymmetry-allowed=1",
+    rtcpFeedback: [
+      { type: "ccm", parameter: "fir" },
+      { type: "nack" },
+      { type: "nack", parameter: "pli" },
+      { type: "goog-remb" },
+    ],
+  }),
+  ffmpegProfile: "high",
+  ffmpegLevel: "5.2",
+  maxWidth: null,
+  maxFps: 60,
+};
+
+/**
+ * Constrained Baseline, Level 3.1 (profile-level-id 42e01f),
+ * packetization-mode 1 -- the WebRTC "mandatory to implement" combination
+ * every major browser supports natively: Chrome/Edge, Safari (Apple
+ * VideoToolbox hardware decode), and Firefox (bundled OpenH264).
+ * Constrained Baseline forbids B-frames (no reference-frame buffering, so
+ * no added latency) and has the broadest hardware-decode support of any
+ * H.264 profile, down to 15-year-old and low-power devices.
+ *
+ * Level 3.1's macroblock-rate budget (MaxMBPS=108,000 MB/s, MaxFS=3,600 MB)
+ * is *exactly* 1280x720 @ 30fps -- the resolution/fps pair the level was
+ * standardized around -- so this tier's maxWidth/maxFps caps aren't
+ * arbitrary, they're the level's own conformance limits.
+ */
+export const VIDEO_CODEC_BASELINE: VideoCodecTier = {
+  codec: new RTCRtpCodecParameters({
+    mimeType: "video/H264",
+    clockRate: 90000,
+    payloadType: 97,
+    parameters: "profile-level-id=42e01f;packetization-mode=1;level-asymmetry-allowed=1",
+    rtcpFeedback: [
+      { type: "ccm", parameter: "fir" },
+      { type: "nack" },
+      { type: "nack", parameter: "pli" },
+      { type: "goog-remb" },
+    ],
+  }),
+  ffmpegProfile: "baseline",
+  ffmpegLevel: "3.1",
+  maxWidth: 1280,
+  maxFps: 30,
+};
+
+/**
+ * Offered to the browser in this order (highest quality first) -- the
+ * offerer's preference order is what most browsers use to break ties when
+ * more than one listed codec is supported, so capable browsers land on
+ * VIDEO_CODEC_HIGH while everything else falls through to the universal
+ * VIDEO_CODEC_BASELINE.
+ */
+export const VIDEO_CODEC_TIERS: VideoCodecTier[] = [VIDEO_CODEC_HIGH, VIDEO_CODEC_BASELINE];
 
 /**
  * Opus at 48 kHz. Per RFC 7587 §5.1, the RTP payload format for Opus MUST
