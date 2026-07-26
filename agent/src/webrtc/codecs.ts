@@ -55,6 +55,26 @@ export interface VideoCodecTier {
   /** fps cap for this tier's ffmpeg encode. */
   maxFps: number;
   /**
+   * Hard ceiling on macroblocks per frame, already reduced to also satisfy the
+   * level's macroblock-RATE limit at `maxFps`: `min(MaxFS, MaxMBPS / maxFps)`.
+   *
+   * A width cap cannot express this, and assuming it could is what broke
+   * decoding on a non-16:9 display. `maxWidth: 1280` was picked because
+   * 1280x720 is exactly level 3.1's 3600-macroblock budget -- but only at 16:9.
+   * On a 3456x2234 (~1.55:1) Retina desktop, 1280 wide becomes 1280x832, i.e.
+   * 80x52 = 4160 macroblocks, and libx264 says so plainly:
+   *
+   *   frame MB size (80x52) > level limit (3600)
+   *   MB rate (124800) > level limit (108000)
+   *
+   * x264 does not raise the level in response -- it warns and still writes the
+   * requested level into the SPS. So the browser negotiates level 3.1, receives
+   * a stream that violates level 3.1, and rejects every frame: the same blank
+   * <video> and endless keyframe requests as a profile mismatch. The real
+   * constraint is on AREA, which is what buildVideoFilter now bounds.
+   */
+  maxMacroblocks: number;
+  /**
    * Bitrate ceiling for this tier's encode, in kbit/s, applied as
    * `-b:v`/`-maxrate` with a half-size `-bufsize`.
    *
@@ -114,6 +134,10 @@ export const VIDEO_CODEC_HIGH: VideoCodecTier = {
   // sending, and 1920x1240@60 sits far inside level 5.2's limits.
   maxWidth: 1920,
   maxFps: 60,
+  // Level 5.2: MaxFS=36864, MaxMBPS=2,073,600. At 60fps the rate limit binds
+  // first: 2,073,600 / 60 = 34,560. The 1920 width cap is what actually
+  // governs here (1920x1240 is only 9,360 MB); this is the backstop.
+  maxMacroblocks: 34560,
   maxBitrateKbps: 8000,
 };
 
@@ -154,6 +178,10 @@ export const VIDEO_CODEC_BASELINE: VideoCodecTier = {
   x264Params: "sliced-threads=0",
   maxWidth: 1280,
   maxFps: 30,
+  // Level 3.1: MaxFS=3600, MaxMBPS=108,000. At 30fps both bind at exactly
+  // 3600, which is 1280x720 -- and ONLY at 16:9, which is precisely why the
+  // width cap alone was not enough on a 1.55:1 display.
+  maxMacroblocks: 3600,
   maxBitrateKbps: 2500,
 };
 
