@@ -21,6 +21,33 @@ view its screen, control its mouse/keyboard, and run a human-like autotyper.
   [Cloudflare Tunnel](#remote-access-via-cloudflare-tunnel) with `npm run tunnel`
   and connect to the `*.trycloudflare.com` URL it prints.
 
+## Features
+
+- **Screen streaming** — *Screenshot* mode (low-frequency, low-bandwidth) or
+  *Video* mode, which **auto-targets the agent's display refresh rate** (30 / 60 /
+  up to 120 fps) using a continuous ffmpeg pipeline.
+- **Remote control** — mouse and keyboard forwarded to the agent, mapped 1:1
+  (click, double-click, right-click, drag) with resolution-independent
+  coordinates.
+- **Human-like autotyper** — types a block of text with adjustable cadence
+  (base delay, jitter, occasional typo+correction), and can be **cancelled
+  mid-run**.
+- **Lock agent's local input** — block the physical keyboard/mouse at the agent
+  so only the client drives it (with auto-release failsafes).
+- **Audio transcription** — a live text transcript of whatever is playing on the
+  agent, produced by **Whisper running in your browser** (audio never leaves the
+  client).
+- **Diagnostics panel** — one click self-checks both the browser and the agent
+  (connection, ffmpeg, capture engine, permissions, input-lock, audio device)
+  and tells you exactly how to fix anything that's wrong.
+- **Direct & encrypted** — one TLS WebSocket (`wss://`), a shared secret, and no
+  relay/VPS. Works over LAN, Tailscale, or a Cloudflare Tunnel.
+
+> **Transport note:** video is JPEG frames over the WebSocket, not WebRTC — simple
+> and robust, and fast enough to hit your display's refresh rate on LAN. WebRTC is
+> noted as a possible future option (see [below](#if-video-mode-feels-laggy)); it
+> is **not** implemented today.
+
 ## Layout
 
 ```
@@ -128,16 +155,20 @@ In the client:
 
 Then:
 
-- **Screen view:** toggle between *Screenshot* mode (low frequency) and *Video*
-  mode (higher frequency JPEG frames).
+- **Screen view:** toggle *Screenshot* mode (low frequency) or *Video* mode,
+  which auto-targets the agent's display refresh rate (up to 120 fps). The
+  readout shows live fps, the target, and frame sequence.
 - **Control:** enable control, then your mouse/keyboard over the canvas drives the
-  agent. Toggle it off to release control.
+  agent (click, double-click, right-click, drag). Toggle it off to release.
 - **Autotype:** paste text, tune the human-likeness (base delay, jitter, typo
-  rate), and click *Type it*.
+  rate), click *Type it* — and hit *Cancel* to stop mid-run.
 - **Lock agent's local input:** blocks the physical keyboard/mouse at the agent
   so only you (the client) drive it. See below.
 - **Transcribe audio:** live text transcript of whatever is playing on the
   agent, produced by a speech model running in your browser. See below.
+- **Diagnostics:** runs on connect (and on demand) — checks the connection,
+  frames, ffmpeg, capture engine, permissions, input-lock, and audio device, and
+  shows the fix for anything wrong. Includes a *Copy* button for the report.
 
 ## Locking the agent's local input
 
