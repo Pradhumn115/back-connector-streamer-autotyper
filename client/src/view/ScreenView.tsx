@@ -24,6 +24,13 @@ interface ScreenViewProps {
   contentRectRef: React.MutableRefObject<ContentRect>;
   /** Agent's detected display refresh rate, for the auto fps target readout. */
   refreshHz?: number;
+  /** Which transport is active: Classic (JPEG/PCM over WS) or WebRTC. */
+  transport: "classic" | "webrtc";
+  onSetTransport: (t: "classic" | "webrtc") => void;
+  /** True when connected via the Cloudflare Tunnel target, where WebRTC isn't available. */
+  transportGateDisabled: boolean;
+  webrtcStream: MediaStream | null;
+  videoRef: React.RefObject<HTMLVideoElement>;
 }
 
 // Interval used for each mode (matches guidance in the protocol notes).
@@ -54,11 +61,23 @@ export function ScreenView({
   canvasRef,
   contentRectRef,
   refreshHz,
+  transport,
+  onSetTransport,
+  transportGateDisabled,
+  webrtcStream,
+  videoRef,
 }: ScreenViewProps) {
   const targetFps = Math.min(MAX_FPS, Math.max(1, Math.round(refreshHz ?? 60)));
   const [fps, setFps] = useState<number>(0);
   const frameTimesRef = useRef<number[]>([]);
   const lastSeqRef = useRef<number>(-1);
+
+  // Attach the WebRTC MediaStream to the <video> element whenever it changes.
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    video.srcObject = webrtcStream;
+  }, [webrtcStream, videoRef]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -135,6 +154,22 @@ export function ScreenView({
             Video
           </button>
         </div>
+        <div className="seg">
+          <button
+            className={transport === "classic" ? "active" : ""}
+            onClick={() => onSetTransport("classic")}
+          >
+            Classic
+          </button>
+          <button
+            className={transport === "webrtc" ? "active" : ""}
+            onClick={() => onSetTransport("webrtc")}
+            disabled={transportGateDisabled}
+            title={transportGateDisabled ? "Not available over Cloudflare Tunnel" : undefined}
+          >
+            WebRTC
+          </button>
+        </div>
         <div className="readout">
           <span>
             mode <b>{mode}</b>
@@ -161,12 +196,23 @@ export function ScreenView({
         </div>
       </div>
       <div className={`canvas-wrap ${controlEnabled ? "is-controlling" : ""}`}>
-        <canvas
-          ref={canvasRef}
-          tabIndex={0}
-          className={controlEnabled ? "canvas controllable" : "canvas"}
-        />
-        {!frame && <div className="canvas-empty">No signal</div>}
+        {transport === "webrtc" ? (
+          <video
+            ref={videoRef}
+            tabIndex={0}
+            autoPlay
+            playsInline
+            muted={false}
+            className={controlEnabled ? "canvas controllable" : "canvas"}
+          />
+        ) : (
+          <canvas
+            ref={canvasRef}
+            tabIndex={0}
+            className={controlEnabled ? "canvas controllable" : "canvas"}
+          />
+        )}
+        {transport === "classic" && !frame && <div className="canvas-empty">No signal</div>}
       </div>
     </>
   );
