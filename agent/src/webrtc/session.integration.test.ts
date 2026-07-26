@@ -4,7 +4,16 @@ import { RTCPeerConnection } from "werift";
 import { WebrtcSession } from "./session.js";
 import { VIDEO_CODEC_TIERS, VIDEO_CODEC_BASELINE, AUDIO_CODEC } from "./codecs.js";
 
-test("createOffer/setAnswer establishes a connection and relays RTP", async () => {
+/**
+ * These tests spawn real ffmpeg processes (via RtpRelay) and real werift peer
+ * connections, so cleanup is registered with t.after() the moment each one is
+ * created rather than written as a trailing statement. A trailing
+ * `session.close()` is skipped entirely when an assertion above it throws,
+ * which leaks an ffmpeg child per failing run — and a failing test is exactly
+ * what gets re-run in a loop. close() is idempotent, so tests that also close
+ * explicitly (to assert on post-close behavior) can keep doing so.
+ */
+test("createOffer/setAnswer establishes a connection and relays RTP", async (t) => {
   const states: Array<{ active: boolean; error?: string }> = [];
   const session = new WebrtcSession({
     // RtpRelay.start() really does spawn ffmpeg with these args; if ffmpeg
@@ -16,6 +25,7 @@ test("createOffer/setAnswer establishes a connection and relays RTP", async () =
     audioFfmpegArgs: () => ["-f", "lavfi", "-i", "anullsrc", "-f", "null", "-"],
     onStateChange: (active, error) => states.push({ active, error }),
   });
+  t.after(() => session.close());
 
   const offerSdp = await session.createOffer();
 
@@ -23,6 +33,7 @@ test("createOffer/setAnswer establishes a connection and relays RTP", async () =
   const browserPc = new RTCPeerConnection({
     codecs: { video: VIDEO_CODEC_TIERS.map((tier) => tier.codec), audio: [AUDIO_CODEC] },
   });
+  t.after(() => browserPc.close());
   await browserPc.setRemoteDescription({ type: "offer", sdp: offerSdp });
   const answer = await browserPc.createAnswer();
   await browserPc.setLocalDescription(answer);
@@ -35,12 +46,9 @@ test("createOffer/setAnswer establishes a connection and relays RTP", async () =
   // hiding the extra callback. Asserting the count catches that.
   assert.equal(states.length, 1);
   assert.equal(states.at(-1)?.active, true);
-
-  session.close();
-  await browserPc.close();
 });
 
-test("setAnswer rejects on ICE-connect timeout and reports failure exactly once", async () => {
+test("setAnswer rejects on ICE-connect timeout and reports failure exactly once", async (t) => {
   const states: Array<{ active: boolean; error?: string }> = [];
   const session = new WebrtcSession({
     videoFfmpegArgsFor: () => ["-f", "lavfi", "-i", "nullsrc", "-f", "null", "-"],
@@ -50,6 +58,7 @@ test("setAnswer rejects on ICE-connect timeout and reports failure exactly once"
     // wait for it.
     iceConnectTimeoutMs: 200,
   });
+  t.after(() => session.close());
 
   const offerSdp = await session.createOffer();
 
@@ -91,12 +100,13 @@ test("setAnswer rejects on ICE-connect timeout and reports failure exactly once"
   assert.equal(states.length, 1);
 });
 
-test("createOffer's SDP declares Opus per RFC 7587 (rtpmap channels=2, fmtp stereo=0)", async () => {
+test("createOffer's SDP declares Opus per RFC 7587 (rtpmap channels=2, fmtp stereo=0)", async (t) => {
   const session = new WebrtcSession({
     videoFfmpegArgsFor: () => ["-f", "lavfi", "-i", "nullsrc", "-f", "null", "-"],
     audioFfmpegArgs: () => ["-f", "lavfi", "-i", "anullsrc", "-f", "null", "-"],
     onStateChange: () => {},
   });
+  t.after(() => session.close());
 
   const offerSdp = await session.createOffer();
 
@@ -109,11 +119,9 @@ test("createOffer's SDP declares Opus per RFC 7587 (rtpmap channels=2, fmtp ster
   // The real (mono) channel count is signaled separately via `stereo=0` in
   // the fmtp line, not via the rtpmap.
   assert.match(offerSdp, /a=fmtp:\d+ [^\r\n]*\bstereo=0\b/);
-
-  session.close();
 });
 
-test("a browser that only supports the baseline tier still negotiates and gets baseline ffmpeg args", async () => {
+test("a browser that only supports the baseline tier still negotiates and gets baseline ffmpeg args", async (t) => {
   const videoArgsCalls: Array<{ profile: string; level: string; maxWidth: number | null }> = [];
   const session = new WebrtcSession({
     videoFfmpegArgsFor: (tier) => {
@@ -127,6 +135,7 @@ test("a browser that only supports the baseline tier still negotiates and gets b
     audioFfmpegArgs: () => ["-f", "lavfi", "-i", "anullsrc", "-f", "null", "-"],
     onStateChange: () => {},
   });
+  t.after(() => session.close());
 
   const offerSdp = await session.createOffer();
   // The offer lists both tiers; confirm both payload types actually appear
@@ -145,6 +154,7 @@ test("a browser that only supports the baseline tier still negotiates and gets b
   const browserPc = new RTCPeerConnection({
     codecs: { video: [VIDEO_CODEC_BASELINE.codec], audio: [AUDIO_CODEC] },
   });
+  t.after(() => browserPc.close());
   await browserPc.setRemoteDescription({ type: "offer", sdp: offerSdp });
   const answer = await browserPc.createAnswer();
   await browserPc.setLocalDescription(answer);
@@ -166,18 +176,16 @@ test("a browser that only supports the baseline tier still negotiates and gets b
     level: VIDEO_CODEC_BASELINE.ffmpegLevel,
     maxWidth: VIDEO_CODEC_BASELINE.maxWidth,
   });
-
-  session.close();
-  await browserPc.close();
 });
 
-test("setAnswer rejects immediately on codec-incompatible answer and reports failure exactly once", async () => {
+test("setAnswer rejects immediately on codec-incompatible answer and reports failure exactly once", async (t) => {
   const states: Array<{ active: boolean; error?: string }> = [];
   const session = new WebrtcSession({
     videoFfmpegArgsFor: () => ["-f", "lavfi", "-i", "nullsrc", "-f", "null", "-"],
     audioFfmpegArgs: () => ["-f", "lavfi", "-i", "anullsrc", "-f", "null", "-"],
     onStateChange: (active, error) => states.push({ active, error }),
   });
+  t.after(() => session.close());
 
   const offerSdp = await session.createOffer();
 
@@ -191,6 +199,7 @@ test("setAnswer rejects immediately on codec-incompatible answer and reports fai
   const browserPc = new RTCPeerConnection({
     codecs: { video: VIDEO_CODEC_TIERS.map((tier) => tier.codec), audio: [AUDIO_CODEC] },
   });
+  t.after(() => browserPc.close());
   await browserPc.setRemoteDescription({ type: "offer", sdp: offerSdp });
   const answer = await browserPc.createAnswer();
   await browserPc.setLocalDescription(answer);
@@ -210,7 +219,4 @@ test("setAnswer rejects immediately on codec-incompatible answer and reports fai
   assert.equal(states.length, 1);
   assert.equal(states[0]?.active, false);
   assert.ok(states[0]?.error, "expected an error message on the failure state");
-
-  session.close();
-  await browserPc.close();
 });
