@@ -76,10 +76,26 @@ export class RtpRelay {
     const proc = spawn("ffmpeg", this.buildArgs(port), { stdio: ["ignore", "ignore", "pipe"] });
     this.proc = proc;
     let stderrTail = "";
+    // Prefix every LINE, not every chunk: a single stderr "data" event often
+    // carries several lines, so prefixing the chunk left lines 2..n
+    // unattributed and looking like they came from some other process —
+    // actively misleading when diagnosing which ffmpeg failed. Partial lines
+    // are held back until their newline arrives.
+    let linePartial = "";
     proc.stderr?.setEncoding("utf8");
     proc.stderr?.on("data", (chunk: string) => {
       stderrTail = (stderrTail + chunk).slice(-STDERR_TAIL_LIMIT);
-      process.stderr.write(`[webrtc:${this.kind}] ffmpeg: ${chunk}`);
+      const lines = (linePartial + chunk).split("\n");
+      linePartial = lines.pop() ?? "";
+      for (const line of lines) {
+        if (line.trim()) process.stderr.write(`[webrtc:${this.kind}] ffmpeg: ${line}\n`);
+      }
+    });
+    proc.stderr?.on("end", () => {
+      if (linePartial.trim()) {
+        process.stderr.write(`[webrtc:${this.kind}] ffmpeg: ${linePartial}\n`);
+      }
+      linePartial = "";
     });
     proc.on("error", (err) => {
       process.stderr.write(`[webrtc:${this.kind}] ffmpeg spawn error: ${String(err)}\n`);

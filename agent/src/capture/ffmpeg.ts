@@ -75,10 +75,26 @@ export class FfmpegCapture implements ScreenCapture {
     this.buf = Buffer.alloc(0);
 
     const args = this.buildArgs();
-    const proc = spawn("ffmpeg", args, { stdio: ["ignore", "pipe", "ignore"] });
+    // stderr is piped rather than ignored: at -loglevel error ffmpeg only
+    // speaks up when something is actually wrong, and discarding it made
+    // capture failures indistinguishable from "no frames yet" — the client
+    // just showed NO SIGNAL forever with nothing explaining why. Windows
+    // gdigrab in particular dies with "Failed to capture image (error 5)"
+    // whenever a secure desktop (UAC prompt, lock screen, Ctrl+Alt+Del)
+    // takes over, which is otherwise completely silent.
+    const proc = spawn("ffmpeg", args, { stdio: ["ignore", "pipe", "pipe"] });
     this.proc = proc;
 
     proc.stdout?.on("data", (chunk: Buffer) => this.onData(chunk));
+    let linePartial = "";
+    proc.stderr?.setEncoding("utf8");
+    proc.stderr?.on("data", (chunk: string) => {
+      const lines = (linePartial + chunk).split("\n");
+      linePartial = lines.pop() ?? "";
+      for (const line of lines) {
+        if (line.trim()) process.stderr.write(`[capture] ffmpeg: ${line}\n`);
+      }
+    });
     proc.on("error", (err) => {
       process.stderr.write(`[ffmpeg] spawn error: ${String(err)}\n`);
     });
