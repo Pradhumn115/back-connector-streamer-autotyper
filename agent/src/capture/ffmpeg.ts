@@ -114,7 +114,7 @@ export class FfmpegCapture implements ScreenCapture {
       // fps filter caps the OUTPUT rate: screen-capture inputs (esp. macOS
       // avfoundation) ignore the input -framerate and would otherwise emit
       // frames as fast as possible. scale keeps width <= maxWidth (even height).
-      "-vf", `fps=${this.fps},scale='min(${this.maxWidth},iw)':-2`,
+      "-vf", `${captureFilterPrefix()}fps=${this.fps},scale='min(${this.maxWidth},iw)':-2`,
       "-c:v", "mjpeg",
       "-q:v", String(this.quality),
       "-f", "mjpeg",
@@ -202,6 +202,43 @@ function jpegEnd(buf: Buffer): number {
 }
 
 /**
+ * Which Windows screen-capture backend to use.
+ *
+ * `gdigrab` (default) is the universally-compatible GDI path, but it has a
+ * hard limitation: it exits with "Failed to capture image (error 5)"
+ * (ERROR_ACCESS_DENIED) whenever a secure desktop takes over — a UAC prompt,
+ * the lock screen, Ctrl+Alt+Del — and cannot recover in-process.
+ *
+ * `ddagrab` uses the Desktop Duplication API (DXGI): it reads from the GPU,
+ * handles fullscreen-exclusive windows that GDI cannot capture, and is the
+ * modern recommended path. It needs Windows 8+, a 64-bit ffmpeg, and a build
+ * with the filter compiled in, which is why it is opt-in rather than the
+ * default — a machine where gdigrab works today must not lose video to an
+ * unavailable filter.
+ *
+ * Opt in with `BCSA_WIN_CAPTURE=ddagrab` before starting the agent.
+ */
+export type WinCaptureBackend = "gdigrab" | "ddagrab";
+
+export function winCaptureBackend(): WinCaptureBackend {
+  return process.env.BCSA_WIN_CAPTURE === "ddagrab" ? "ddagrab" : "gdigrab";
+}
+
+/**
+ * Filter-chain prefix required by the active capture backend, or "" when none
+ * is needed. ddagrab exclusively emits D3D11 *hardware* frames, so anything
+ * downstream that runs on the CPU (our fps/scale/crop filters, libx264,
+ * mjpeg) must be preceded by an explicit hwdownload back to system memory.
+ * Omitting it makes ffmpeg fail with a format-negotiation error rather than
+ * silently misbehave.
+ */
+export function captureFilterPrefix(): string {
+  return platform() === "win32" && winCaptureBackend() === "ddagrab"
+    ? "hwdownload,format=bgra,"
+    : "";
+}
+
+/**
  * Per-OS screen-capture input args (`-f <format> ... -i <device>`), shared by
  * FfmpegCapture's MJPEG-over-pipe pipeline and the WebRTC RTP pipeline (see
  * agent/src/index.ts) — both grab the same screen, they only differ in the
@@ -217,7 +254,22 @@ export function screenCaptureInputArgs(fps: number): string[] {
         "-i", `${macScreenDevice()}:none`,
       ];
     case "win32":
-      return ["-f", "gdigrab", "-framerate", String(fps), "-i", "desktop"];
+      return winCaptureBackend() === "ddagrab"
+        ? // ddagrab is a lavfi *source filter*, not a demuxer, so it's given
+          // as `-f lavfi -i ddagrab=...` rather than `-f ddagrab`.
+          ["-f", "lavfi", "-i", `ddagrab=output_idx=0:framerate=${fps}`]
+        : [
+            "-f", "gdigrab",
+            "-framerate", String(fps),
+            // gdigrab hands ffmpeg raw BGRA frames (~8MB at 1080p). The
+            // default probesize (5MB) can't hold even one full frame, so
+            // avformat_find_stream_info logs "not enough frames to estimate
+            // rate; consider increasing probesize" on every spawn even
+            // though -framerate above already tells ffmpeg the rate. A
+            // larger probesize lets it see full frames and drops the warning.
+            "-probesize", "42M",
+            "-i", "desktop",
+          ];
     default:
       return [
         "-f", "x11grab",

@@ -1,4 +1,5 @@
 import type { VideoCodecTier } from "./codecs.js";
+import { captureFilterPrefix } from "../capture/ffmpeg.js";
 
 /**
  * Builds the `-vf` filter chain for a WebRTC video encode.
@@ -27,7 +28,11 @@ import type { VideoCodecTier } from "./codecs.js";
  */
 export function buildVideoFilter(tier: VideoCodecTier): string {
   const fps = `fps=${tier.maxFps}`;
-  return tier.maxWidth === null
-    ? `${fps},crop=trunc(iw/2)*2:trunc(ih/2)*2`
-    : `${fps},scale='min(${tier.maxWidth},trunc(iw/2)*2)':-2`;
+  const chain =
+    tier.maxWidth === null
+      ? `${fps},crop=trunc(iw/2)*2:trunc(ih/2)*2`
+      : `${fps},scale='min(${tier.maxWidth},trunc(iw/2)*2)':-2`;
+  // Prefixed (not appended): a hardware-frame capture backend has to be
+  // downloaded to system memory before any of the above can run on it.
+  return `${captureFilterPrefix()}${chain}`;
 }

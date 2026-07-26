@@ -380,3 +380,28 @@ shows the error rather than freezing.
 | **"Browser WebRTC" warns in diagnostics** | Your browser lacks `RTCPeerConnection`. Use a modern browser; Classic mode still works. |
 | **Black video after switching** | Codec negotiation or the peer connection failed to complete. It should auto-revert to Classic; if not, toggle back and retry. Very restrictive networks can block the peer connection (STUN/ICE) — use Classic there. |
 | **Video works, no audio (or vice-versa)** | One track's codec (H.264 / Opus) didn't negotiate. Retry the toggle; check the agent log for a codec-negotiation error. |
+| **Windows: `Failed to capture image (error 5)` in the agent log** | `gdigrab` (the default Windows capture) is refused by Windows whenever a **secure desktop** is showing — a UAC prompt, the lock screen, or Ctrl+Alt+Del — and it exits rather than recovering. The agent now respawns it automatically (4 tries with backoff), so a passing UAC prompt no longer ends the stream. If it fails *persistently*, switch capture backends: see below. |
+
+#### Windows: switching to the `ddagrab` capture backend
+
+`gdigrab` uses the old GDI path and cannot capture a secure desktop or a
+fullscreen-exclusive window. `ddagrab` uses the Desktop Duplication API
+(DXGI), reads from the GPU, and handles both. It needs **Windows 8+**, a
+**64-bit ffmpeg**, and a build with the filter compiled in — which is why it
+is opt-in rather than the default.
+
+First check your ffmpeg actually has it (this should show a live capture and
+exit after 5 seconds):
+
+```
+ffmpeg -f lavfi -i ddagrab=output_idx=0:framerate=30 -t 5 -vf hwdownload,format=bgra -f null -
+```
+
+If that works, start the agent with the backend selected:
+
+```powershell
+$env:BCSA_WIN_CAPTURE="ddagrab"; npm run agent
+```
+
+Both Classic and WebRTC pick it up. Unset it (or set anything else) to go back
+to `gdigrab`.

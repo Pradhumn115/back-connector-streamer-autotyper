@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { platform } from "node:os";
 import { buildVideoFilter } from "./videoFilter.js";
 import { VIDEO_CODEC_HIGH, VIDEO_CODEC_BASELINE } from "./codecs.js";
 import { ffmpegAvailable } from "../capture/ffmpeg.js";
@@ -13,6 +14,40 @@ test("caps fps for both tiers", () => {
 test("the capped tier caps width and the uncapped tier doesn't scale at all", () => {
   assert.match(buildVideoFilter(VIDEO_CODEC_BASELINE), /scale='min\(1280,/);
   assert.doesNotMatch(buildVideoFilter(VIDEO_CODEC_HIGH), /scale=/);
+});
+
+/**
+ * ddagrab emits D3D11 hardware frames, so every CPU-side filter must be
+ * preceded by hwdownload — and it must come FIRST in the chain, before
+ * fps/crop/scale, or ffmpeg fails format negotiation. This only applies on
+ * Windows with the backend opted into, so the platform check mirrors
+ * captureFilterPrefix()'s own.
+ */
+test("ddagrab opt-in prefixes the chain with hwdownload, ahead of the CPU filters", (t) => {
+  if (platform() !== "win32") {
+    t.skip("captureFilterPrefix() is a no-op off Windows");
+    return;
+  }
+  const prev = process.env.BCSA_WIN_CAPTURE;
+  process.env.BCSA_WIN_CAPTURE = "ddagrab";
+  try {
+    for (const tier of [VIDEO_CODEC_HIGH, VIDEO_CODEC_BASELINE]) {
+      const chain = buildVideoFilter(tier);
+      assert.ok(
+        chain.startsWith("hwdownload,format=bgra,"),
+        `hwdownload must lead the chain, got: ${chain}`,
+      );
+      assert.ok(chain.indexOf("hwdownload") < chain.indexOf("fps="), "hwdownload before fps");
+    }
+  } finally {
+    if (prev === undefined) delete process.env.BCSA_WIN_CAPTURE;
+    else process.env.BCSA_WIN_CAPTURE = prev;
+  }
+});
+
+test("gdigrab (default) adds no hwdownload prefix", () => {
+  assert.doesNotMatch(buildVideoFilter(VIDEO_CODEC_HIGH), /hwdownload/);
+  assert.doesNotMatch(buildVideoFilter(VIDEO_CODEC_BASELINE), /hwdownload/);
 });
 
 /**
