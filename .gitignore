@@ -7,3 +7,6 @@ agent/.data/
 
 # native build artifacts (compiled per-machine)
 agent/native/bin/
+
+# Claude Code local worktrees/config
+.claude/

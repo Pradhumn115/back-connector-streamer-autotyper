@@ -23,9 +23,15 @@ view its screen, control its mouse/keyboard, and run a human-like autotyper.
 
 ## Features
 
-- **Screen streaming** — *Screenshot* mode (low-frequency, low-bandwidth) or
-  *Video* mode, which **auto-targets the agent's display refresh rate** (30 / 60 /
-  up to 120 fps) using a continuous ffmpeg pipeline.
+- **Screen streaming, two transports:**
+  - **Classic** — JPEG frames over the WebSocket. *Screenshot* mode
+    (low-frequency, low-bandwidth) or *Video* mode, which **auto-targets the
+    agent's display refresh rate** (30 / 60 / up to 120 fps) via a continuous
+    ffmpeg pipeline. Simple and robust; higher bandwidth.
+  - **WebRTC** — a real peer connection (**H.264 video + Opus audio**, agent side
+    via `werift` + ffmpeg RTP). Lower latency and bandwidth over the internet.
+    Toggle Classic ⇄ WebRTC in the client; on any WebRTC error it falls back to
+    Classic (no silent failure).
 - **Remote control** — mouse and keyboard forwarded to the agent, mapped 1:1
   (click, double-click, right-click, drag) with resolution-independent
   coordinates.
@@ -43,10 +49,10 @@ view its screen, control its mouse/keyboard, and run a human-like autotyper.
 - **Direct & encrypted** — one TLS WebSocket (`wss://`), a shared secret, and no
   relay/VPS. Works over LAN, Tailscale, or a Cloudflare Tunnel.
 
-> **Transport note:** video is JPEG frames over the WebSocket, not WebRTC — simple
-> and robust, and fast enough to hit your display's refresh rate on LAN. WebRTC is
-> noted as a possible future option (see [below](#if-video-mode-feels-laggy)); it
-> is **not** implemented today.
+> **Transport note:** the default **Classic** path is JPEG frames over the
+> WebSocket — simple, robust, and fast enough to hit your display's refresh rate
+> on LAN. Switch to **WebRTC** (H.264 + Opus) for lower latency and bandwidth,
+> which matters most over the internet. Both are selectable in the client.
 
 ## Layout
 
@@ -338,10 +344,12 @@ npm run typecheck                 # typecheck all workspaces
 npm run build                     # build all workspaces
 ```
 
-## If video mode feels laggy
+## If Classic video feels laggy
 
-The video path is JPEG-frames-over-WebSocket, not WebRTC — simple and robust, but
-heavier on bandwidth. If latency is unacceptable, the design (see
-`docs/superpowers/specs/`) documents swapping in a WebRTC video transport
-(`werift`) or an `ffmpeg`-based capture pipeline without changing the rest of the
-architecture.
+Classic video is JPEG-frames-over-WebSocket — simple and robust, but heavier on
+bandwidth (a 120fps stream is ~85 Mbps), which is fine on LAN/Tailscale but a lot
+over the internet. If it feels laggy, **switch the transport to WebRTC** in the
+client: it uses a real peer connection with H.264 video + Opus audio (agent side
+via `werift` + ffmpeg RTP), so it adapts bitrate and stays low-latency over
+constrained links. On any WebRTC failure the client falls back to Classic and
+shows the error rather than freezing.
