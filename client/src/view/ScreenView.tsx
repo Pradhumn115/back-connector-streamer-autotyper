@@ -24,6 +24,13 @@ interface ScreenViewProps {
   contentRectRef: React.MutableRefObject<ContentRect>;
   /** Agent's detected display refresh rate, for the auto fps target readout. */
   refreshHz?: number;
+  /** Which transport is active: Classic (JPEG/PCM over WS) or WebRTC. */
+  transport: "classic" | "webrtc";
+  onSetTransport: (t: "classic" | "webrtc") => void;
+  /** True when connected via the Cloudflare Tunnel target, where WebRTC isn't available. */
+  transportGateDisabled: boolean;
+  webrtcStream: MediaStream | null;
+  videoRef: React.RefObject<HTMLVideoElement>;
 }
 
 // Interval used for each mode (matches guidance in the protocol notes).
@@ -54,11 +61,131 @@ export function ScreenView({
   canvasRef,
   contentRectRef,
   refreshHz,
+  transport,
+  onSetTransport,
+  transportGateDisabled,
+  webrtcStream,
+  videoRef,
 }: ScreenViewProps) {
   const targetFps = Math.min(MAX_FPS, Math.max(1, Math.round(refreshHz ?? 60)));
   const [fps, setFps] = useState<number>(0);
   const frameTimesRef = useRef<number[]>([]);
   const lastSeqRef = useRef<number>(-1);
+
+  // Real fps for WebRTC video, computed from actual decoded frame callbacks
+  // (rvfc) rather than the Classic `fps` state above, which is never updated
+  // in WebRTC mode since no `frame` (JPEG-over-WS) messages arrive then.
+  const [webrtcFps, setWebrtcFps] = useState<number | null>(null);
+  const [webrtcResolution, setWebrtcResolution] = useState<{ w: number; h: number } | null>(null);
+  const webrtcFrameTimesRef = useRef<number[]>([]);
+
+  // Attach the WebRTC MediaStream to the <video> element whenever it changes.
+  // `transport` is in the deps too: switching Classic -> WebRTC -> Classic ->
+  // WebRTC unmounts/remounts the <video> element (ScreenView renders either
+  // <video> or <canvas>), so a stable stream reference alone wouldn't
+  // re-trigger this effect and re-attach to the new element.
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    video.srcObject = webrtcStream;
+  }, [webrtcStream, videoRef, transport]);
+
+  // The <video> element has no explicit object-fit in CSS, so it falls back
+  // to the UA default of `contain` — i.e. it IS letterboxed whenever its
+  // intrinsic aspect ratio differs from its box, same as the Classic canvas.
+  // contentRectRef is otherwise only ever written by the canvas-draw effect
+  // below, so without this, WebRTC mode would map clicks against stale or
+  // zeroed rects (wrong whenever entered before any Classic frame drew, or
+  // after a window resize while in WebRTC). Compute and publish the video's
+  // actual content rect, refreshed on metadata load and on resize.
+  useEffect(() => {
+    const video = videoRef.current;
+    if (transport !== "webrtc" || !video) return;
+
+    // Reset immediately so stale Classic-mode rects never leak into WebRTC
+    // mode even before the first metadata/resize computation lands.
+    contentRectRef.current = { dx: 0, dy: 0, dw: 0, dh: 0 };
+
+    const updateRect = () => {
+      const vw = video.videoWidth;
+      const vh = video.videoHeight;
+      if (vw === 0 || vh === 0) return;
+      const rect = video.getBoundingClientRect();
+      const cw = rect.width;
+      const ch = rect.height;
+      if (cw === 0 || ch === 0) return;
+      const scale = Math.min(cw / vw, ch / vh);
+      const dw = vw * scale;
+      const dh = vh * scale;
+      const dx = (cw - dw) / 2;
+      const dy = (ch - dh) / 2;
+      contentRectRef.current = { dx, dy, dw, dh };
+    };
+
+    updateRect();
+    video.addEventListener("loadedmetadata", updateRect);
+    const resizeObserver = new ResizeObserver(updateRect);
+    resizeObserver.observe(video);
+
+    return () => {
+      video.removeEventListener("loadedmetadata", updateRect);
+      resizeObserver.disconnect();
+    };
+  }, [transport, webrtcStream, videoRef, contentRectRef]);
+
+  // Track real WebRTC video fps + resolution from actual decoded frames via
+  // requestVideoFrameCallback (Chrome/Edge only — feature-detected below; on
+  // browsers without it we simply omit the fps figure rather than crash).
+  useEffect(() => {
+    if (transport !== "webrtc") {
+      setWebrtcFps(null);
+      setWebrtcResolution(null);
+      webrtcFrameTimesRef.current = [];
+      return;
+    }
+    const video = videoRef.current as
+      | (HTMLVideoElement & {
+          requestVideoFrameCallback?: (
+            cb: (now: number, metadata: { width: number; height: number }) => void
+          ) => number;
+          cancelVideoFrameCallback?: (handle: number) => void;
+        })
+      | null;
+    if (!video || typeof video.requestVideoFrameCallback !== "function") {
+      setWebrtcFps(null);
+      return;
+    }
+
+    webrtcFrameTimesRef.current = [];
+    let handle: number | null = null;
+    let cancelled = false;
+
+    const onFrame = (_now: number, metadata: { width: number; height: number }) => {
+      if (cancelled) return;
+      setWebrtcResolution({ w: metadata.width, h: metadata.height });
+
+      // Same rolling ~2s window pattern as the Classic fps logic above.
+      const nowMs = performance.now();
+      const times = webrtcFrameTimesRef.current;
+      times.push(nowMs);
+      while (times.length > 0 && nowMs - times[0] > 2000) times.shift();
+      if (times.length >= 2) {
+        const span = (times[times.length - 1] - times[0]) / 1000;
+        setWebrtcFps(span > 0 ? (times.length - 1) / span : 0);
+      }
+
+      handle = video.requestVideoFrameCallback!(onFrame);
+    };
+
+    handle = video.requestVideoFrameCallback(onFrame);
+
+    return () => {
+      cancelled = true;
+      if (handle !== null && typeof video.cancelVideoFrameCallback === "function") {
+        video.cancelVideoFrameCallback(handle);
+      }
+    };
+  }, [transport, webrtcStream, videoRef]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -125,32 +252,83 @@ export function ScreenView({
           <button
             className={mode === "screenshot" ? "active" : ""}
             onClick={() => onSetMode("screenshot")}
+            disabled={transport === "webrtc"}
+            title={
+              transport === "webrtc"
+                ? "Not available while WebRTC is active"
+                : undefined
+            }
           >
             Screenshot
           </button>
           <button
             className={mode === "video" ? "active" : ""}
             onClick={() => onSetMode("video")}
+            disabled={transport === "webrtc"}
+            title={
+              transport === "webrtc"
+                ? "Not available while WebRTC is active"
+                : undefined
+            }
           >
             Video
           </button>
         </div>
+        <div className="seg">
+          <button
+            className={transport === "classic" ? "active" : ""}
+            onClick={() => onSetTransport("classic")}
+          >
+            Classic
+          </button>
+          <button
+            className={transport === "webrtc" ? "active" : ""}
+            onClick={() => onSetTransport("webrtc")}
+            disabled={transportGateDisabled}
+            title={transportGateDisabled ? "Not available over Cloudflare Tunnel" : undefined}
+          >
+            WebRTC
+          </button>
+        </div>
         <div className="readout">
-          <span>
-            mode <b>{mode}</b>
-          </span>
-          <span>
-            fps <b>{fps.toFixed(1)}</b>
-          </span>
-          {mode === "video" && (
-            <span>
-              target <b>{targetFps}</b>
-            </span>
-          )}
-          {frame && (
-            <span>
-              seq <b>{frame.seq}</b>
-            </span>
+          {transport === "webrtc" ? (
+            <>
+              <span>
+                transport <b>WebRTC</b>
+              </span>
+              {webrtcFps !== null && (
+                <span>
+                  fps <b>{webrtcFps.toFixed(1)}</b>
+                </span>
+              )}
+              {webrtcResolution && (
+                <span>
+                  res{" "}
+                  <b>
+                    {webrtcResolution.w}x{webrtcResolution.h}
+                  </b>
+                </span>
+              )}
+            </>
+          ) : (
+            <>
+              <span>
+                mode <b>{mode}</b>
+              </span>
+              <span>
+                fps <b>{fps.toFixed(1)}</b>
+              </span>
+              {mode === "video" && (
+                <span>
+                  target <b>{targetFps}</b>
+                </span>
+              )}
+              {frame && (
+                <span>
+                  seq <b>{frame.seq}</b>
+                </span>
+              )}
+            </>
           )}
           <span>
             ctrl{" "}
@@ -161,12 +339,23 @@ export function ScreenView({
         </div>
       </div>
       <div className={`canvas-wrap ${controlEnabled ? "is-controlling" : ""}`}>
-        <canvas
-          ref={canvasRef}
-          tabIndex={0}
-          className={controlEnabled ? "canvas controllable" : "canvas"}
-        />
-        {!frame && <div className="canvas-empty">No signal</div>}
+        {transport === "webrtc" ? (
+          <video
+            ref={videoRef}
+            tabIndex={0}
+            autoPlay
+            playsInline
+            muted={false}
+            className={controlEnabled ? "canvas controllable" : "canvas"}
+          />
+        ) : (
+          <canvas
+            ref={canvasRef}
+            tabIndex={0}
+            className={controlEnabled ? "canvas controllable" : "canvas"}
+          />
+        )}
+        {transport === "classic" && !frame && <div className="canvas-empty">No signal</div>}
       </div>
     </>
   );

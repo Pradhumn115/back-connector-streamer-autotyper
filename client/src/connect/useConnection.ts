@@ -76,6 +76,10 @@ export interface AudioStatus {
 export interface UseConnectionOptions {
   /** Called for every decoded audio frame (16 kHz mono PCM) from the agent. */
   onAudioFrame?: (frame: DecodedAudioFrame) => void;
+  /** Called when the agent sends a WebRTC SDP offer. */
+  onWebrtcOffer?: (sdp: string) => void;
+  /** Called when the agent reports a change in WebRTC session state. */
+  onWebrtcState?: (active: boolean, error?: string) => void;
 }
 
 export interface DiagnosticsState {
@@ -86,6 +90,9 @@ export interface DiagnosticsState {
 
 export interface UseConnection {
   status: ConnectionStatus;
+  /** Index into buildTargets()'s LAN/Tailscale/Tunnel order for the target
+   *  that most recently completed auth, or null if not connected. */
+  connectedTargetIndex: number | null;
   agentInfo: AgentInfo | null;
   latestFrame: LatestFrame | null;
   autotype: AutotypeStatus;
@@ -99,6 +106,9 @@ export interface UseConnection {
   send: (msg: ClientMessage) => void;
   setAudio: (enabled: boolean) => void;
   runDiagnostics: () => void;
+  startWebrtc: () => void;
+  stopWebrtc: () => void;
+  sendWebrtcAnswer: (sdp: string) => void;
 }
 
 const STORAGE_KEY = "bcsa.connect";
@@ -164,6 +174,21 @@ function buildTargets(p: ConnectParams): string[] {
 }
 
 /**
+ * Parallel to buildTargets(), but yields each surviving entry's original
+ * fixed slot (0=LAN, 1=Tailscale, 2=Tunnel) instead of its URL. Index-aligned
+ * with buildTargets()'s output, so `slots[targetIdxRef.current]` recovers the
+ * fixed slot for whichever target just authed — without matching by address
+ * string, which would resolve to the first slot if two fields happened to
+ * hold the same host.
+ */
+function buildTargetSlots(p: ConnectParams): number[] {
+  return [p.lanAddress, p.tailscaleAddress, p.tunnelAddress]
+    .map((raw, slot) => ({ url: normalizeTarget(raw), slot }))
+    .filter((t) => t.url !== "")
+    .map((t) => t.slot);
+}
+
+/**
  * React hook that owns the whole WebSocket lifecycle: dual-path connect with a
  * per-target timeout, auth handshake, frame decoding (latest-only), and
  * reconnect-with-backoff. All timers/sockets live in refs so re-renders never
@@ -171,6 +196,7 @@ function buildTargets(p: ConnectParams): string[] {
  */
 export function useConnection(opts: UseConnectionOptions = {}): UseConnection {
   const [status, setStatus] = useState<ConnectionStatus>("idle");
+  const [connectedTargetIndex, setConnectedTargetIndex] = useState<number | null>(null);
   const [agentInfo, setAgentInfo] = useState<AgentInfo | null>(null);
   const [latestFrame, setLatestFrame] = useState<LatestFrame | null>(null);
   const [audio, setAudioState] = useState<AudioStatus>({
@@ -181,6 +207,10 @@ export function useConnection(opts: UseConnectionOptions = {}): UseConnection {
   // latest one without needing to re-open the connection.
   const onAudioFrameRef = useRef(opts.onAudioFrame);
   onAudioFrameRef.current = opts.onAudioFrame;
+  const onWebrtcOfferRef = useRef(opts.onWebrtcOffer);
+  onWebrtcOfferRef.current = opts.onWebrtcOffer;
+  const onWebrtcStateRef = useRef(opts.onWebrtcState);
+  onWebrtcStateRef.current = opts.onWebrtcState;
   const [autotype, setAutotype] = useState<AutotypeStatus>({
     done: 0,
     total: 0,
@@ -234,6 +264,11 @@ export function useConnection(opts: UseConnectionOptions = {}): UseConnection {
   const scheduleReconnect = useCallback(() => {
     if (stoppedRef.current) return;
     setStatus("reconnecting");
+    // Stale during the reconnect window otherwise: connectedTargetIndex
+    // would still reflect the target from the just-dropped session, which
+    // could leave transport gates (e.g. WebRTC's Tunnel gate) looking
+    // connected-to-a-target when nothing is actually connected.
+    setConnectedTargetIndex(null);
     const delay = backoffMsRef.current;
     backoffMsRef.current = Math.min(delay * 2, MAX_BACKOFF_MS);
     backoffTimerRef.current = window.setTimeout(() => {
@@ -248,6 +283,15 @@ export function useConnection(opts: UseConnectionOptions = {}): UseConnection {
         if (msg.ok) {
           authedRef.current = true;
           setStatus("connected");
+          // targetIdxRef.current indexes into buildTargets()'s *filtered*
+          // array (blank fields are skipped), so it does not line up with
+          // the fixed LAN(0)/Tailscale(1)/Tunnel(2) slots whenever an
+          // earlier field is blank. Recover the fixed slot positionally via
+          // buildTargetSlots(), which is index-aligned with buildTargets() —
+          // this avoids matching by address string, which would resolve to
+          // the first slot if two fields held the same host.
+          const slotIdx = buildTargetSlots(paramsRef.current)[targetIdxRef.current];
+          setConnectedTargetIndex(slotIdx !== undefined ? slotIdx : null);
           backoffMsRef.current = 500; // reset backoff after a good auth
         } else {
           // Auth is wrong: stop retrying entirely.
@@ -255,6 +299,7 @@ export function useConnection(opts: UseConnectionOptions = {}): UseConnection {
           stoppedRef.current = true;
           setLastError(msg.reason ?? "Authentication failed");
           setStatus("error");
+          setConnectedTargetIndex(null);
           wsRef.current?.close();
         }
         break;
@@ -289,6 +334,12 @@ export function useConnection(opts: UseConnectionOptions = {}): UseConnection {
         break;
       case "agentError":
         setLastError(msg.message);
+        break;
+      case "webrtcOffer":
+        onWebrtcOfferRef.current?.(msg.sdp);
+        break;
+      case "webrtcState":
+        onWebrtcStateRef.current?.(msg.active, msg.error);
         break;
     }
   }, []);
@@ -448,6 +499,7 @@ export function useConnection(opts: UseConnectionOptions = {}): UseConnection {
     setInputLock({ locked: false, supported: false });
     setAudioState({ supported: false, enabled: false });
     setStatus("idle");
+    setConnectedTargetIndex(null);
   }, [clearTimers, revokeCurrentUrl]);
 
   const connect = useCallback(
@@ -475,6 +527,7 @@ export function useConnection(opts: UseConnectionOptions = {}): UseConnection {
       setAudioState({ supported: false, enabled: false });
       setDiagnostics({ running: false, checks: [] });
       setLastError(null);
+      setConnectedTargetIndex(null);
 
       paramsRef.current = next;
       setParams(next);
@@ -508,6 +561,13 @@ export function useConnection(opts: UseConnectionOptions = {}): UseConnection {
     send({ type: "runDiagnostics" });
   }, [send]);
 
+  const startWebrtc = useCallback(() => send({ type: "startWebrtc" }), [send]);
+  const stopWebrtc = useCallback(() => send({ type: "stopWebrtc" }), [send]);
+  const sendWebrtcAnswer = useCallback(
+    (sdp: string) => send({ type: "webrtcAnswer", sdp }),
+    [send],
+  );
+
   // Clean up on unmount.
   useEffect(() => {
     return () => {
@@ -529,6 +589,7 @@ export function useConnection(opts: UseConnectionOptions = {}): UseConnection {
 
   return {
     status,
+    connectedTargetIndex,
     agentInfo,
     latestFrame,
     autotype,
@@ -542,5 +603,8 @@ export function useConnection(opts: UseConnectionOptions = {}): UseConnection {
     send,
     setAudio,
     runDiagnostics,
+    startWebrtc,
+    stopWebrtc,
+    sendWebrtcAnswer,
   };
 }

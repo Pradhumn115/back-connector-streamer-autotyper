@@ -3,9 +3,14 @@ import type { StreamMode } from "@bcsa/shared";
 import { useConnection } from "./connect/useConnection";
 import { useAudioTranscription } from "./audio/useAudioTranscription";
 import { useRemoteControl } from "./control/useRemoteControl";
+import { useWebrtcConnection } from "./webrtc/useWebrtcConnection";
+import { tapWebrtcAudioForTranscription } from "./webrtc/webrtcAudioTap";
 import { ScreenView, intervalForMode, type ContentRect } from "./view/ScreenView";
 import { AutotypePanel } from "./autotype-panel/AutotypePanel";
 import { DiagnosticsPanel } from "./diagnostics/DiagnosticsPanel";
+
+/** Index into buildTargets()'s LAN/Tailscale/Tunnel order for the Tunnel target. */
+const TUNNEL_TARGET_INDEX = 2;
 
 /** Format elapsed milliseconds as M:SS for the record timer. */
 function fmtElapsed(ms: number): string {
@@ -18,8 +23,19 @@ function fmtElapsed(ms: number): string {
 export function App() {
   // Owns the Whisper worker; conn feeds it decoded audio frames.
   const audioTx = useAudioTranscription();
-  const conn = useConnection({ onAudioFrame: audioTx.pushFrame });
+  const webrtc = useWebrtcConnection();
+  const [transport, setTransport] = useState<"classic" | "webrtc">("classic");
+  // Holds an incoming WebRTC offer SDP until the effect below can answer it —
+  // conn isn't defined yet at the point onWebrtcOffer is declared, so we can't
+  // close over conn.sendWebrtcAnswer directly.
+  const [pendingOfferSdp, setPendingOfferSdp] = useState<string | null>(null);
+  const conn = useConnection({
+    onAudioFrame: audioTx.pushFrame,
+    onWebrtcOffer: (sdp) => setPendingOfferSdp(sdp),
+    onWebrtcState: webrtc.handleAgentState,
+  });
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
   // The letterbox rectangle the frame occupies inside the canvas, shared between
   // the view (which computes it) and the control layer (which maps clicks with it).
   const contentRectRef = useRef<ContentRect>({ dx: 0, dy: 0, dw: 0, dh: 0 });
@@ -34,12 +50,80 @@ export function App() {
   const [controlEnabled, setControlEnabled] = useState<boolean>(false);
   const [panelOpen, setPanelOpen] = useState<boolean>(true);
 
-  // Wire mouse/keyboard to the canvas; gated by the control toggle.
-  useRemoteControl(canvasRef, contentRectRef, conn.send, controlEnabled);
+  // Wire mouse/keyboard to whichever surface is active for the current
+  // transport; gated by the control toggle. Control (mouse/keyboard/autotype/
+  // input-lock) behaves identically either way — only the rendering surface
+  // differs.
+  const activeSurfaceRef = transport === "webrtc" ? videoRef : canvasRef;
+  useRemoteControl(activeSurfaceRef, contentRectRef, conn.send, controlEnabled);
 
   const connected = conn.status === "connected";
 
   const refreshHz = conn.agentInfo?.refreshHz;
+
+  // Answer a pending WebRTC offer once conn (and thus sendWebrtcAnswer) exists.
+  useEffect(() => {
+    if (pendingOfferSdp === null) return;
+    const sdp = pendingOfferSdp;
+    setPendingOfferSdp(null);
+    void webrtc
+      .handleOffer(sdp)
+      .then((answer) => conn.sendWebrtcAnswer(answer))
+      .catch((err) => {
+        // handleOffer already records the failure in webrtc.status/error;
+        // this catch only prevents an unhandled promise rejection.
+        console.error("WebRTC offer handling failed:", err);
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingOfferSdp]);
+
+  // No silent fallback: if WebRTC errors out, revert to Classic and surface
+  // the error (webrtc.error is already shown via ScreenView/hint text below).
+  // Critically, we must tell the agent to stop its WebRTC session *before*
+  // (or alongside) re-sending setMode: the agent rejects setMode with
+  // "Classic video is paused while WebRTC is active" while its WebRTC
+  // session is still up, which would otherwise leave Classic frozen/black
+  // even though the toggle says "Classic".
+  useEffect(() => {
+    if (transport === "webrtc" && webrtc.status === "error") {
+      conn.stopWebrtc();
+      setTransport("classic");
+      conn.send({ type: "setMode", mode, intervalMs: intervalForMode(mode, refreshHz) });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [webrtc.status]);
+
+  // Tap the WebRTC audio track into the existing (unmodified) transcription
+  // pipeline whenever a stream is live; live captions start automatically.
+  // We snapshot whatever Classic-mode transcription state was active before
+  // switching (mode + whether live captions were on) and restore it on the
+  // way back out, so a Classic -> WebRTC -> Classic round-trip doesn't
+  // silently drop a live-caption session the user already had running.
+  // `audioTx.setMode` (not just startLive's internal ref) is used so the
+  // hook's `mode` state and `modeRef` stay in sync — startLive alone only
+  // updates modeRef, which desyncs the UI's mode indicator from actual
+  // behavior.
+  useEffect(() => {
+    if (transport !== "webrtc" || !webrtc.stream) return;
+    const cleanup = tapWebrtcAudioForTranscription(webrtc.stream, audioTx.pushFrame);
+    const prevMode = audioTx.mode;
+    const prevLiveActive = audioTx.liveActive;
+    audioTx.setMode("live");
+    audioTx.startLive();
+    return () => {
+      cleanup();
+      audioTx.stopLive();
+      if (prevMode !== "live") {
+        // setMode() itself stops live/record and resets buffers, which is
+        // the correct "clean switch back" behavior for record mode.
+        audioTx.setMode(prevMode);
+      } else if (prevLiveActive) {
+        // Was already live-captioning before entering WebRTC: resume it.
+        audioTx.startLive();
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [transport, webrtc.stream]);
 
   // On (re)connect, tell the agent the current mode so streaming starts, and
   // auto-run diagnostics once so the panel is populated without a manual press.
@@ -65,6 +149,25 @@ export function App() {
   const onSetMode = (next: StreamMode) => {
     setMode(next);
     conn.send({ type: "setMode", mode: next, intervalMs: intervalForMode(next, refreshHz) });
+  };
+
+  const onSetTransport = (next: "classic" | "webrtc") => {
+    if (next === transport) return;
+    if (next === "webrtc") {
+      // Reset to a clean "idle" status before each attempt. Without this, a
+      // second identical failure leaves webrtc.status stuck at "error" (it
+      // never changes value), so the effect above — which only fires on a
+      // webrtc.status *transition* — never re-runs and the toggle stays
+      // stuck on WebRTC with a black surface.
+      webrtc.stop();
+      setTransport("webrtc");
+      conn.startWebrtc();
+    } else {
+      setTransport("classic");
+      conn.stopWebrtc();
+      webrtc.stop();
+      conn.send({ type: "setMode", mode, intervalMs: intervalForMode(mode, refreshHz) });
+    }
   };
 
   // Live captions: continuous, VAD-gated transcription.
@@ -207,6 +310,12 @@ export function App() {
             <span className="status-error">{conn.lastError}</span>
           </>
         )}
+        {webrtc.error && (
+          <>
+            <span className="status-sep">/</span>
+            <span className="status-error">WebRTC: {webrtc.error}</span>
+          </>
+        )}
       </div>
 
       <div className={`workspace ${panelOpen ? "" : "panel-closed"}`}>
@@ -219,6 +328,13 @@ export function App() {
             canvasRef={canvasRef}
             contentRectRef={contentRectRef}
             refreshHz={refreshHz}
+            transport={transport}
+            onSetTransport={onSetTransport}
+            transportGateDisabled={
+              !connected || conn.connectedTargetIndex === TUNNEL_TARGET_INDEX
+            }
+            webrtcStream={webrtc.stream}
+            videoRef={videoRef}
           />
         </main>
 
@@ -269,14 +385,14 @@ export function App() {
                 <button
                   className={audioTx.mode === "live" ? "active" : ""}
                   onClick={() => onSwitchMode("live")}
-                  disabled={!connected || !conn.audio.supported}
+                  disabled={transport === "webrtc" || !connected || !conn.audio.supported}
                 >
                   Live
                 </button>
                 <button
                   className={audioTx.mode === "record" ? "active" : ""}
                   onClick={() => onSwitchMode("record")}
-                  disabled={!connected || !conn.audio.supported}
+                  disabled={transport === "webrtc" || !connected || !conn.audio.supported}
                 >
                   Record
                 </button>
@@ -289,7 +405,7 @@ export function App() {
                   type="checkbox"
                   checked={audioTx.liveActive}
                   onChange={(e) => onToggleLive(e.target.checked)}
-                  disabled={!connected || !conn.audio.supported}
+                  disabled={transport === "webrtc" || !connected || !conn.audio.supported}
                 />
                 <span className="switch-track" />
                 <span className="switch-label">Live captions</span>
@@ -299,7 +415,9 @@ export function App() {
                 <button
                   className={`btn ${audioTx.recording ? "btn-danger" : "btn-primary"}`}
                   onClick={onRecordToggle}
-                  disabled={!connected || !conn.audio.supported || audioTx.transcribing}
+                  disabled={
+                    transport === "webrtc" || !connected || !conn.audio.supported || audioTx.transcribing
+                  }
                 >
                   {audioTx.recording ? "⏸ Pause & transcribe" : "⏺ Record"}
                 </button>
@@ -310,19 +428,21 @@ export function App() {
             )}
 
             <p className={`hint ${audioTx.status === "error" ? "warn" : ""}`}>
-              {connected && !conn.audio.supported
-                ? "No loopback device on the agent — install BlackHole (macOS) / VB-Cable (Windows). See README."
-                : audioTx.status === "loading"
-                  ? `Loading speech model… ${audioTx.progress}%`
-                  : audioTx.status === "error"
-                    ? `Model error: ${audioTx.error ?? "failed to load"}`
-                    : audioTx.transcribing
-                      ? "Transcribing the recording…"
-                      : audioTx.mode === "record"
-                        ? "Record a take, then Pause to transcribe the whole thing."
-                        : audioTx.status === "ready"
-                          ? `Live captions${audioTx.device ? ` · ${audioTx.device}` : ""} — speech only, silence skipped.`
-                          : "Transcribes whatever's playing on the agent to text, in your browser."}
+              {transport === "webrtc"
+                ? "Transcribing the WebRTC audio track automatically."
+                : connected && !conn.audio.supported
+                  ? "No loopback device on the agent — install BlackHole (macOS) / VB-Cable (Windows). See README."
+                  : audioTx.status === "loading"
+                    ? `Loading speech model… ${audioTx.progress}%`
+                    : audioTx.status === "error"
+                      ? `Model error: ${audioTx.error ?? "failed to load"}`
+                      : audioTx.transcribing
+                        ? "Transcribing the recording…"
+                        : audioTx.mode === "record"
+                          ? "Record a take, then Pause to transcribe the whole thing."
+                          : audioTx.status === "ready"
+                            ? `Live captions${audioTx.device ? ` · ${audioTx.device}` : ""} — speech only, silence skipped.`
+                            : "Transcribes whatever's playing on the agent to text, in your browser."}
             </p>
 
             {(audioTx.transcript || audioTx.status === "ready" || audioTx.transcribing) && (

@@ -13,6 +13,17 @@ export function pcmS16ToFloat32(bytes: Uint8Array): Float32Array {
   return out;
 }
 
+/** Inverse of pcmS16ToFloat32: Float32 samples in [-1, 1) -> interleaved s16le bytes. */
+export function float32ToPcmS16(samples: Float32Array): Uint8Array {
+  const out = new Uint8Array(samples.length * 2);
+  const view = new DataView(out.buffer);
+  for (let i = 0; i < samples.length; i++) {
+    const clamped = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(i * 2, Math.round(clamped * 32767), true);
+  }
+  return out;
+}
+
 /**
  * Accumulates a stream of Float32 samples and emits fixed-size windows for the
  * transcriber. `hopSamples` is how far the window advances each step; equal to
