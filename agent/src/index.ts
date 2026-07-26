@@ -48,7 +48,34 @@ async function main(): Promise<void> {
   // the same loopback-device detection as AudioCapture (see capture/ffmpeg.ts
   // and audio/detect.ts) — only the output tail differs (RTP + libx264/libopus
   // instead of MJPEG-over-pipe/raw-PCM-over-pipe).
-  const WEBRTC_VIDEO_FPS = 30;
+  //
+  // Target the agent's real display refresh rate, same as Classic mode's
+  // client-side intervalForMode()/MAX_FPS in ScreenView.tsx: clamp
+  // Math.round(refreshHz) to [1, MAX_WEBRTC_FPS].
+  //
+  // MAX_WEBRTC_FPS is intentionally NOT 120 (Classic's MAX_FPS): unlike
+  // FfmpegCapture (which scales its output to `maxWidth` before encoding),
+  // this WebRTC pipeline captures and encodes at the display's *native*
+  // resolution (no `-vf scale`). H.264 level 4.0 (see the -level flag below
+  // and webrtc/codecs.ts) has a fixed macroblock-rate budget of 245,760
+  // MB/s. For the real device this code was tested against (1728x1117,
+  // called out in the -level comment below), that's 108x70 = 7,560
+  // macroblocks/frame, so the level-4.0 ceiling is only ~32.5fps at that
+  // resolution — and for larger/4K-class native resolutions the safe fps is
+  // far lower still (e.g. ~1080p is already only good for ~30fps; ~1440p
+  // for ~17fps). Raising this cap to Classic's 120 (or even 60) would
+  // silently exceed level 4.0's budget on exactly the resolutions this app
+  // targets, reproducing the silent libx264 hang that motivated switching
+  // from level 3.1 to 4.0 in the first place (see below). 30 is the largest
+  // ceiling verified safe at the tested real capture resolution, so it's
+  // kept as the cap; only the *lower* bound now truly varies with the
+  // display's refresh rate (e.g. a sub-30Hz display now correctly targets
+  // its own rate instead of blindly encoding at a fixed 30fps). Unlocking a
+  // higher genuine ceiling would require either bumping past level 4.0
+  // (more decoder-compat risk) or scaling WebRTC's capture resolution down
+  // like FfmpegCapture already does — both out of scope here.
+  const MAX_WEBRTC_FPS = 30;
+  const WEBRTC_VIDEO_FPS = Math.min(MAX_WEBRTC_FPS, Math.max(1, Math.round(refreshHz)));
   const webrtcFfmpegArgs = {
     video: (port: number) => [
       "-hide_banner",
