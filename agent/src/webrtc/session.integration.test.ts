@@ -90,3 +90,69 @@ test("setAnswer rejects on ICE-connect timeout and reports failure exactly once"
   await new Promise((resolve) => setTimeout(resolve, 50));
   assert.equal(states.length, 1);
 });
+
+test("createOffer's SDP declares Opus per RFC 7587 (rtpmap channels=2, fmtp stereo=0)", async () => {
+  const session = new WebrtcSession({
+    videoFfmpegArgs: () => ["-f", "lavfi", "-i", "nullsrc", "-f", "null", "-"],
+    audioFfmpegArgs: () => ["-f", "lavfi", "-i", "anullsrc", "-f", "null", "-"],
+    onStateChange: () => {},
+  });
+
+  const offerSdp = await session.createOffer();
+
+  // RFC 7587 §5.1: the rtpmap MUST always declare channels=2 for Opus,
+  // regardless of whether the actual audio is mono -- browsers (Chrome
+  // confirmed) reject a `/1` rtpmap outright, silently falling back to a
+  // codec not in this agent's list. A future edit that "simplifies"
+  // AUDIO_CODEC back to `channels: 1` would produce `opus/48000/1` here.
+  assert.match(offerSdp, /a=rtpmap:\d+ opus\/48000\/2\r\n/);
+  // The real (mono) channel count is signaled separately via `stereo=0` in
+  // the fmtp line, not via the rtpmap.
+  assert.match(offerSdp, /a=fmtp:\d+ [^\r\n]*\bstereo=0\b/);
+
+  session.close();
+});
+
+test("setAnswer rejects immediately on codec-incompatible answer and reports failure exactly once", async () => {
+  const states: Array<{ active: boolean; error?: string }> = [];
+  const session = new WebrtcSession({
+    videoFfmpegArgs: () => ["-f", "lavfi", "-i", "nullsrc", "-f", "null", "-"],
+    audioFfmpegArgs: () => ["-f", "lavfi", "-i", "anullsrc", "-f", "null", "-"],
+    onStateChange: (active, error) => states.push({ active, error }),
+  });
+
+  const offerSdp = await session.createOffer();
+
+  // Stand-in "browser" peer using the agent's own codecs, so its answer is
+  // structurally/ICE-wise valid -- then hand-edit the audio m-line/rtpmap
+  // to advertise only PCMU (payload 0), a codec the agent doesn't support.
+  // This simulates werift's codec-negotiation failing outright when the
+  // remote answer has no codec in common with ours (the scenario the
+  // setAnswer() catch branch exists for), as opposed to the ICE-timeout
+  // path covered by the test above.
+  const browserPc = new RTCPeerConnection({
+    codecs: { video: [VIDEO_CODEC], audio: [AUDIO_CODEC] },
+  });
+  await browserPc.setRemoteDescription({ type: "offer", sdp: offerSdp });
+  const answer = await browserPc.createAnswer();
+  await browserPc.setLocalDescription(answer);
+  const validAnswerSdp = browserPc.localDescription!.sdp;
+
+  const incompatibleAnswerSdp = validAnswerSdp
+    .replace("m=audio 9 UDP/TLS/RTP/SAVPF 111", "m=audio 9 UDP/TLS/RTP/SAVPF 0")
+    .replace("a=rtpmap:111 opus/48000/2", "a=rtpmap:0 PCMU/8000")
+    .replace(/a=fmtp:111[^\r\n]*\r\n/, "");
+
+  await assert.rejects(
+    () => session.setAnswer(incompatibleAnswerSdp),
+    /negotiate codecs failed/,
+    "expected setAnswer's catch branch (immediate codec-negotiation failure), not the ICE-timeout path",
+  );
+
+  assert.equal(states.length, 1);
+  assert.equal(states[0]?.active, false);
+  assert.ok(states[0]?.error, "expected an error message on the failure state");
+
+  session.close();
+  await browserPc.close();
+});
