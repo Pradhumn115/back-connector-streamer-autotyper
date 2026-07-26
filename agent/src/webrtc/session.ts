@@ -134,6 +134,16 @@ export class WebrtcSession {
       this.reportFailure(err);
       throw new Error(err);
     }
+    // Replacing the relay must stop the old one first. setAnswer() can run
+    // more than once for a session (a duplicate/retried webrtcAnswer, or a
+    // renegotiation), and a bare reassignment orphaned the previous
+    // RtpRelay: nothing held a reference to it any more, so close() couldn't
+    // reach it, and its ffmpeg kept capturing the screen and writing RTP into
+    // this same track for the rest of the process's life. Observed in the
+    // wild as two simultaneous gdigrab instances logging under
+    // [webrtc:video], fighting over one track.
+    this.videoRelay?.stop();
+
     // The video encoder dying is reported as a session failure: without it
     // the peer connection stays happily "connected" while the client renders
     // a permanently blank <video>, with nothing anywhere saying why. The

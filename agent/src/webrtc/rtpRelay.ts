@@ -17,6 +17,33 @@ import { RtpPacket, type MediaStreamTrack } from "werift";
  */
 const STDERR_TAIL_LIMIT = 4000;
 
+/**
+ * How many times to respawn ffmpeg after it dies on its own before giving up
+ * and reporting the track as failed.
+ *
+ * Screen capture fails *transiently* for reasons that have nothing to do with
+ * bad parameters, and the failure is not recoverable within the ffmpeg process
+ * — it exits. On Windows, gdigrab exits with "Failed to capture image
+ * (error 5)" (ERROR_ACCESS_DENIED) the moment a secure desktop takes over: a
+ * UAC prompt, the lock screen, Ctrl+Alt+Del. For a remote-control tool,
+ * triggering a UAC prompt on the far machine is an ordinary thing to do, so
+ * treating the first such exit as terminal left video dead for the rest of the
+ * session. Retrying covers that, and also covers a device-handoff race at
+ * startup (WebRTC's capture spawns immediately after Classic's is killed).
+ */
+const MAX_RESPAWNS = 4;
+
+/** Backoff before each respawn attempt, indexed by attempt number. */
+const RESPAWN_DELAYS_MS = [250, 500, 1500, 3000];
+
+/**
+ * A process that survived at least this long counts as healthy, so the
+ * respawn budget resets. Without this, a session that hits four separate UAC
+ * prompts hours apart would exhaust the budget and fail on the fourth,
+ * despite having recovered cleanly every time.
+ */
+const HEALTHY_RUN_MS = 10_000;
+
 /** Last non-empty line of a captured stderr blob, for a one-line summary. */
 function lastLine(text: string): string {
   const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
@@ -28,6 +55,11 @@ export class RtpRelay {
   private socket: Socket | null = null;
   /** Bumped on every stop(); lets an in-flight start() detect it was cancelled. */
   private generation = 0;
+  /** Kept so a respawn can re-attach to the same track. */
+  private track: MediaStreamTrack | null = null;
+  /** Respawns used since the last healthy run; reset by HEALTHY_RUN_MS. */
+  private respawns = 0;
+  private respawnTimer: NodeJS.Timeout | null = null;
 
   constructor(
     private readonly kind: "video" | "audio",
@@ -48,6 +80,7 @@ export class RtpRelay {
 
   async start(track: MediaStreamTrack): Promise<void> {
     this.stop();
+    this.track = track;
     const generation = this.generation;
     const port = await randomUdpPort();
     if (generation !== this.generation) {
@@ -100,30 +133,66 @@ export class RtpRelay {
     proc.on("error", (err) => {
       process.stderr.write(`[webrtc:${this.kind}] ffmpeg spawn error: ${String(err)}\n`);
     });
+    const spawnedAt = Date.now();
     proc.on("exit", (code) => {
       // Capture identity *before* clearing: stop() sets this.proc to null and
       // SIGKILLs (exit code null), and a restart replaces it — neither is a
       // failure, so only a still-current process exiting non-zero reports.
       const wasCurrent = this.proc === proc;
       if (wasCurrent) this.proc = null;
-      if (code !== null && code !== 0) {
-        const detail = stderrTail.trim();
-        process.stderr.write(
-          `[webrtc:${this.kind}] ffmpeg exited with code ${code}` +
-            (detail ? `:\n${detail}\n` : "\n"),
+      if (code === null || code === 0) return;
+
+      const detail = stderrTail.trim();
+      process.stderr.write(
+        `[webrtc:${this.kind}] ffmpeg exited with code ${code}` +
+          (detail ? `:\n${detail}\n` : "\n"),
+      );
+      if (!wasCurrent) return;
+
+      // A process that ran a good while before dying was working; don't hold
+      // its earlier retries against the next failure.
+      if (Date.now() - spawnedAt >= HEALTHY_RUN_MS) this.respawns = 0;
+
+      const summary = lastLine(detail);
+      if (this.respawns >= MAX_RESPAWNS) {
+        this.onFatal?.(
+          `${this.kind} encoder failed after ${this.respawns} restarts (ffmpeg exit ${code})` +
+            (summary ? `: ${summary}` : ""),
         );
-        if (wasCurrent) {
-          const summary = lastLine(detail);
-          this.onFatal?.(
-            `${this.kind} encoder failed (ffmpeg exit ${code})${summary ? `: ${summary}` : ""}`,
-          );
-        }
+        return;
       }
+
+      const delay = RESPAWN_DELAYS_MS[Math.min(this.respawns, RESPAWN_DELAYS_MS.length - 1)];
+      this.respawns++;
+      process.stderr.write(
+        `[webrtc:${this.kind}] restarting ffmpeg in ${delay}ms ` +
+          `(attempt ${this.respawns}/${MAX_RESPAWNS})\n`,
+      );
+      const generationAtExit = this.generation;
+      const trackAtExit = this.track;
+      this.respawnTimer = setTimeout(() => {
+        this.respawnTimer = null;
+        // stop() (or another start()) happened while we were waiting — the
+        // relay is no longer ours to restart.
+        if (generationAtExit !== this.generation || !trackAtExit) return;
+        void this.start(trackAtExit);
+      }, delay);
+      this.respawnTimer.unref?.();
     });
   }
 
   stop(): void {
     this.generation++;
+    if (this.respawnTimer) {
+      clearTimeout(this.respawnTimer);
+      this.respawnTimer = null;
+    }
+    // NOT reset here: start() calls stop() first, so a respawn (which goes
+    // through start()) would zero its own budget and retry forever. The
+    // counter is cleared only by a genuinely healthy run (HEALTHY_RUN_MS);
+    // a fresh session gets a fresh RtpRelay instance, and therefore a fresh
+    // counter, for free.
+    this.track = null;
     if (this.proc) {
       this.proc.kill("SIGKILL");
       this.proc = null;
