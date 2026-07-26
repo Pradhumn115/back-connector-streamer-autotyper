@@ -90,6 +90,9 @@ export interface DiagnosticsState {
 
 export interface UseConnection {
   status: ConnectionStatus;
+  /** Index into buildTargets()'s LAN/Tailscale/Tunnel order for the target
+   *  that most recently completed auth, or null if not connected. */
+  connectedTargetIndex: number | null;
   agentInfo: AgentInfo | null;
   latestFrame: LatestFrame | null;
   autotype: AutotypeStatus;
@@ -178,6 +181,7 @@ function buildTargets(p: ConnectParams): string[] {
  */
 export function useConnection(opts: UseConnectionOptions = {}): UseConnection {
   const [status, setStatus] = useState<ConnectionStatus>("idle");
+  const [connectedTargetIndex, setConnectedTargetIndex] = useState<number | null>(null);
   const [agentInfo, setAgentInfo] = useState<AgentInfo | null>(null);
   const [latestFrame, setLatestFrame] = useState<LatestFrame | null>(null);
   const [audio, setAudioState] = useState<AudioStatus>({
@@ -259,6 +263,19 @@ export function useConnection(opts: UseConnectionOptions = {}): UseConnection {
         if (msg.ok) {
           authedRef.current = true;
           setStatus("connected");
+          // targetIdxRef.current indexes into buildTargets()'s *filtered*
+          // array (blank fields are skipped), so it does not line up with
+          // the fixed LAN(0)/Tailscale(1)/Tunnel(2) slots whenever an
+          // earlier field is blank. Recover the fixed slot by matching the
+          // normalized address that actually succeeded against each slot.
+          const connectedAddress = buildTargets(paramsRef.current)[targetIdxRef.current];
+          const slots = [
+            normalizeTarget(paramsRef.current.lanAddress),
+            normalizeTarget(paramsRef.current.tailscaleAddress),
+            normalizeTarget(paramsRef.current.tunnelAddress),
+          ];
+          const slotIdx = slots.findIndex((s) => s !== "" && s === connectedAddress);
+          setConnectedTargetIndex(slotIdx >= 0 ? slotIdx : null);
           backoffMsRef.current = 500; // reset backoff after a good auth
         } else {
           // Auth is wrong: stop retrying entirely.
@@ -266,6 +283,7 @@ export function useConnection(opts: UseConnectionOptions = {}): UseConnection {
           stoppedRef.current = true;
           setLastError(msg.reason ?? "Authentication failed");
           setStatus("error");
+          setConnectedTargetIndex(null);
           wsRef.current?.close();
         }
         break;
@@ -465,6 +483,7 @@ export function useConnection(opts: UseConnectionOptions = {}): UseConnection {
     setInputLock({ locked: false, supported: false });
     setAudioState({ supported: false, enabled: false });
     setStatus("idle");
+    setConnectedTargetIndex(null);
   }, [clearTimers, revokeCurrentUrl]);
 
   const connect = useCallback(
@@ -492,6 +511,7 @@ export function useConnection(opts: UseConnectionOptions = {}): UseConnection {
       setAudioState({ supported: false, enabled: false });
       setDiagnostics({ running: false, checks: [] });
       setLastError(null);
+      setConnectedTargetIndex(null);
 
       paramsRef.current = next;
       setParams(next);
@@ -553,6 +573,7 @@ export function useConnection(opts: UseConnectionOptions = {}): UseConnection {
 
   return {
     status,
+    connectedTargetIndex,
     agentInfo,
     latestFrame,
     autotype,
