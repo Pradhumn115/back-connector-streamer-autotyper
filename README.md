@@ -1,5 +1,14 @@
 # Back Connector — Streamer + Autotyper
 
+> ## ⚠️ Authorized use only
+> This tool streams a machine's screen and remotely controls its keyboard and
+> mouse. **Run it only on machines you personally own, or ones you have explicit
+> permission to control.** Using it to access someone else's device without their
+> consent is illegal in most places. It is built for legitimate personal remote
+> access — it has **no stealth, hiding, or evasion features** by design, and it
+> always shows a visible cert prompt and requires a shared secret. You are
+> responsible for how you use it.
+
 A personal remote-control tool for machines you own. Run the **agent** on the
 machine you want to control; open the **client** (a web app) on another device to
 view its screen, control its mouse/keyboard, and run a human-like autotyper.
@@ -11,10 +20,6 @@ view its screen, control its mouse/keyboard, and run a human-like autotyper.
 - **Remote (no VPN, behind double NAT):** run a
   [Cloudflare Tunnel](#remote-access-via-cloudflare-tunnel) with `npm run tunnel`
   and connect to the `*.trycloudflare.com` URL it prints.
-
-> ⚠️ This controls a real machine's keyboard, mouse, and screen. Only run it on
-> machines you own or are authorized to control. It has no stealth features by
-> design.
 
 ## Layout
 
