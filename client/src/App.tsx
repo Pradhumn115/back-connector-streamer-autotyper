@@ -114,15 +114,42 @@ export function App() {
     return tapWebrtcAudioForTranscription(webrtc.stream, audioTx.pushFrame);
   }, [transport, webrtc.stream, audioTx.pushFrame]);
 
-  // On (re)connect, tell the agent the current mode so streaming starts, and
+  // On (re)connect, start whichever transport is currently selected, and
   // auto-run diagnostics once so the panel is populated without a manual press.
+  //
+  // This must branch on `transport`. It used to send setMode unconditionally --
+  // a Classic-only command -- so a connection established while the toggle
+  // already said WebRTC left the agent never once asked to open a session, and
+  // the video stayed blank. That is reachable in two ordinary ways, because
+  // useConnection's send() silently drops anything queued while the socket
+  // isn't OPEN and the WebRTC button is only disabled for Cloudflare Tunnel,
+  // not while disconnected:
+  //
+  //   1. Select WebRTC before pressing Connect. onSetTransport's startWebrtc()
+  //      is dropped on the closed socket, and nothing re-sends it afterwards.
+  //   2. Lose the connection while in WebRTC mode and let it reconnect. The
+  //      agent tore its session down; the client never asks for a new one.
+  //
+  // Both presented as "WebRTC just doesn't stream", with toggling to Classic
+  // and back as the only workaround -- that path runs onSetTransport with an
+  // open socket, which is what actually sent startWebrtc.
   useEffect(() => {
-    if (connected) {
+    if (!connected) return;
+    if (transport === "webrtc") {
+      // Same reset as onSetTransport: any peer connection from a previous
+      // session is dead once the control channel has dropped, and a stale
+      // "error" status would suppress the retry effect above.
+      webrtc.stop();
+      conn.startWebrtc();
+    } else {
       conn.send({ type: "setMode", mode, intervalMs: intervalForMode(mode, refreshHz) });
-      conn.runDiagnostics();
     }
+    conn.runDiagnostics();
     // Only fire on transition into connected; mode changes are handled by
-    // onSetMode which sends its own setMode.
+    // onSetMode and transport changes by onSetTransport, each sending its own
+    // message. `transport` is read but deliberately not a dependency -- this
+    // reads whichever transport was selected at the moment the connection came
+    // up, which is exactly what needs starting.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connected]);
 
