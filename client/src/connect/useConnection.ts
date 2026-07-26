@@ -174,6 +174,21 @@ function buildTargets(p: ConnectParams): string[] {
 }
 
 /**
+ * Parallel to buildTargets(), but yields each surviving entry's original
+ * fixed slot (0=LAN, 1=Tailscale, 2=Tunnel) instead of its URL. Index-aligned
+ * with buildTargets()'s output, so `slots[targetIdxRef.current]` recovers the
+ * fixed slot for whichever target just authed — without matching by address
+ * string, which would resolve to the first slot if two fields happened to
+ * hold the same host.
+ */
+function buildTargetSlots(p: ConnectParams): number[] {
+  return [p.lanAddress, p.tailscaleAddress, p.tunnelAddress]
+    .map((raw, slot) => ({ url: normalizeTarget(raw), slot }))
+    .filter((t) => t.url !== "")
+    .map((t) => t.slot);
+}
+
+/**
  * React hook that owns the whole WebSocket lifecycle: dual-path connect with a
  * per-target timeout, auth handshake, frame decoding (latest-only), and
  * reconnect-with-backoff. All timers/sockets live in refs so re-renders never
@@ -249,6 +264,11 @@ export function useConnection(opts: UseConnectionOptions = {}): UseConnection {
   const scheduleReconnect = useCallback(() => {
     if (stoppedRef.current) return;
     setStatus("reconnecting");
+    // Stale during the reconnect window otherwise: connectedTargetIndex
+    // would still reflect the target from the just-dropped session, which
+    // could leave transport gates (e.g. WebRTC's Tunnel gate) looking
+    // connected-to-a-target when nothing is actually connected.
+    setConnectedTargetIndex(null);
     const delay = backoffMsRef.current;
     backoffMsRef.current = Math.min(delay * 2, MAX_BACKOFF_MS);
     backoffTimerRef.current = window.setTimeout(() => {
@@ -266,16 +286,12 @@ export function useConnection(opts: UseConnectionOptions = {}): UseConnection {
           // targetIdxRef.current indexes into buildTargets()'s *filtered*
           // array (blank fields are skipped), so it does not line up with
           // the fixed LAN(0)/Tailscale(1)/Tunnel(2) slots whenever an
-          // earlier field is blank. Recover the fixed slot by matching the
-          // normalized address that actually succeeded against each slot.
-          const connectedAddress = buildTargets(paramsRef.current)[targetIdxRef.current];
-          const slots = [
-            normalizeTarget(paramsRef.current.lanAddress),
-            normalizeTarget(paramsRef.current.tailscaleAddress),
-            normalizeTarget(paramsRef.current.tunnelAddress),
-          ];
-          const slotIdx = slots.findIndex((s) => s !== "" && s === connectedAddress);
-          setConnectedTargetIndex(slotIdx >= 0 ? slotIdx : null);
+          // earlier field is blank. Recover the fixed slot positionally via
+          // buildTargetSlots(), which is index-aligned with buildTargets() —
+          // this avoids matching by address string, which would resolve to
+          // the first slot if two fields held the same host.
+          const slotIdx = buildTargetSlots(paramsRef.current)[targetIdxRef.current];
+          setConnectedTargetIndex(slotIdx !== undefined ? slotIdx : null);
           backoffMsRef.current = 500; // reset backoff after a good auth
         } else {
           // Auth is wrong: stop retrying entirely.

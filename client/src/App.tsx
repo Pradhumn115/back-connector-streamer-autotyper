@@ -66,14 +66,27 @@ export function App() {
     if (pendingOfferSdp === null) return;
     const sdp = pendingOfferSdp;
     setPendingOfferSdp(null);
-    void webrtc.handleOffer(sdp).then((answer) => conn.sendWebrtcAnswer(answer));
+    void webrtc
+      .handleOffer(sdp)
+      .then((answer) => conn.sendWebrtcAnswer(answer))
+      .catch((err) => {
+        // handleOffer already records the failure in webrtc.status/error;
+        // this catch only prevents an unhandled promise rejection.
+        console.error("WebRTC offer handling failed:", err);
+      });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingOfferSdp]);
 
   // No silent fallback: if WebRTC errors out, revert to Classic and surface
   // the error (webrtc.error is already shown via ScreenView/hint text below).
+  // Critically, we must tell the agent to stop its WebRTC session *before*
+  // (or alongside) re-sending setMode: the agent rejects setMode with
+  // "Classic video is paused while WebRTC is active" while its WebRTC
+  // session is still up, which would otherwise leave Classic frozen/black
+  // even though the toggle says "Classic".
   useEffect(() => {
     if (transport === "webrtc" && webrtc.status === "error") {
+      conn.stopWebrtc();
       setTransport("classic");
       conn.send({ type: "setMode", mode, intervalMs: intervalForMode(mode, refreshHz) });
     }
@@ -82,13 +95,32 @@ export function App() {
 
   // Tap the WebRTC audio track into the existing (unmodified) transcription
   // pipeline whenever a stream is live; live captions start automatically.
+  // We snapshot whatever Classic-mode transcription state was active before
+  // switching (mode + whether live captions were on) and restore it on the
+  // way back out, so a Classic -> WebRTC -> Classic round-trip doesn't
+  // silently drop a live-caption session the user already had running.
+  // `audioTx.setMode` (not just startLive's internal ref) is used so the
+  // hook's `mode` state and `modeRef` stay in sync — startLive alone only
+  // updates modeRef, which desyncs the UI's mode indicator from actual
+  // behavior.
   useEffect(() => {
     if (transport !== "webrtc" || !webrtc.stream) return;
     const cleanup = tapWebrtcAudioForTranscription(webrtc.stream, audioTx.pushFrame);
+    const prevMode = audioTx.mode;
+    const prevLiveActive = audioTx.liveActive;
+    audioTx.setMode("live");
     audioTx.startLive();
     return () => {
       cleanup();
       audioTx.stopLive();
+      if (prevMode !== "live") {
+        // setMode() itself stops live/record and resets buffers, which is
+        // the correct "clean switch back" behavior for record mode.
+        audioTx.setMode(prevMode);
+      } else if (prevLiveActive) {
+        // Was already live-captioning before entering WebRTC: resume it.
+        audioTx.startLive();
+      }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [transport, webrtc.stream]);
@@ -122,6 +154,12 @@ export function App() {
   const onSetTransport = (next: "classic" | "webrtc") => {
     if (next === transport) return;
     if (next === "webrtc") {
+      // Reset to a clean "idle" status before each attempt. Without this, a
+      // second identical failure leaves webrtc.status stuck at "error" (it
+      // never changes value), so the effect above — which only fires on a
+      // webrtc.status *transition* — never re-runs and the toggle stays
+      // stuck on WebRTC with a black surface.
+      webrtc.stop();
       setTransport("webrtc");
       conn.startWebrtc();
     } else {
@@ -292,7 +330,9 @@ export function App() {
             refreshHz={refreshHz}
             transport={transport}
             onSetTransport={onSetTransport}
-            transportGateDisabled={conn.connectedTargetIndex === TUNNEL_TARGET_INDEX}
+            transportGateDisabled={
+              !connected || conn.connectedTargetIndex === TUNNEL_TARGET_INDEX
+            }
             webrtcStream={webrtc.stream}
             videoRef={videoRef}
           />

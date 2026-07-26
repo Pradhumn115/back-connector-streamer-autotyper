@@ -19,6 +19,15 @@ export function tapWebrtcAudioForTranscription(
   if (audioTracks.length === 0) return () => {};
 
   const ctx = new AudioContext();
+  // Browsers' autoplay policies can start a new AudioContext "suspended"
+  // until a user gesture resumes it; if it stays suspended, onaudioprocess
+  // never fires and transcription silently produces nothing. The WebRTC
+  // toggle click that leads here is itself a user gesture, so resume() is
+  // expected to succeed; the resulting promise is fire-and-forget since
+  // there's nothing actionable to do if it doesn't.
+  if (ctx.state === "suspended") {
+    void ctx.resume();
+  }
   const source = ctx.createMediaStreamSource(new MediaStream([audioTracks[0]]));
   // ScriptProcessorNode is deprecated but is the simplest correct option here
   // and needs no build-time worklet-file wiring; AudioWorkletNode is the

@@ -73,11 +73,58 @@ export function ScreenView({
   const lastSeqRef = useRef<number>(-1);
 
   // Attach the WebRTC MediaStream to the <video> element whenever it changes.
+  // `transport` is in the deps too: switching Classic -> WebRTC -> Classic ->
+  // WebRTC unmounts/remounts the <video> element (ScreenView renders either
+  // <video> or <canvas>), so a stable stream reference alone wouldn't
+  // re-trigger this effect and re-attach to the new element.
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
     video.srcObject = webrtcStream;
-  }, [webrtcStream, videoRef]);
+  }, [webrtcStream, videoRef, transport]);
+
+  // The <video> element has no explicit object-fit in CSS, so it falls back
+  // to the UA default of `contain` — i.e. it IS letterboxed whenever its
+  // intrinsic aspect ratio differs from its box, same as the Classic canvas.
+  // contentRectRef is otherwise only ever written by the canvas-draw effect
+  // below, so without this, WebRTC mode would map clicks against stale or
+  // zeroed rects (wrong whenever entered before any Classic frame drew, or
+  // after a window resize while in WebRTC). Compute and publish the video's
+  // actual content rect, refreshed on metadata load and on resize.
+  useEffect(() => {
+    const video = videoRef.current;
+    if (transport !== "webrtc" || !video) return;
+
+    // Reset immediately so stale Classic-mode rects never leak into WebRTC
+    // mode even before the first metadata/resize computation lands.
+    contentRectRef.current = { dx: 0, dy: 0, dw: 0, dh: 0 };
+
+    const updateRect = () => {
+      const vw = video.videoWidth;
+      const vh = video.videoHeight;
+      if (vw === 0 || vh === 0) return;
+      const rect = video.getBoundingClientRect();
+      const cw = rect.width;
+      const ch = rect.height;
+      if (cw === 0 || ch === 0) return;
+      const scale = Math.min(cw / vw, ch / vh);
+      const dw = vw * scale;
+      const dh = vh * scale;
+      const dx = (cw - dw) / 2;
+      const dy = (ch - dh) / 2;
+      contentRectRef.current = { dx, dy, dw, dh };
+    };
+
+    updateRect();
+    video.addEventListener("loadedmetadata", updateRect);
+    const resizeObserver = new ResizeObserver(updateRect);
+    resizeObserver.observe(video);
+
+    return () => {
+      video.removeEventListener("loadedmetadata", updateRect);
+      resizeObserver.disconnect();
+    };
+  }, [transport, webrtcStream, videoRef, contentRectRef]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -144,12 +191,24 @@ export function ScreenView({
           <button
             className={mode === "screenshot" ? "active" : ""}
             onClick={() => onSetMode("screenshot")}
+            disabled={transport === "webrtc"}
+            title={
+              transport === "webrtc"
+                ? "Not available while WebRTC is active"
+                : undefined
+            }
           >
             Screenshot
           </button>
           <button
             className={mode === "video" ? "active" : ""}
             onClick={() => onSetMode("video")}
+            disabled={transport === "webrtc"}
+            title={
+              transport === "webrtc"
+                ? "Not available while WebRTC is active"
+                : undefined
+            }
           >
             Video
           </button>
