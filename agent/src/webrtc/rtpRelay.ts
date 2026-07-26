@@ -44,6 +44,25 @@ const RESPAWN_DELAYS_MS = [250, 500, 1500, 3000];
  */
 const HEALTHY_RUN_MS = 10_000;
 
+/**
+ * How long a freshly spawned ffmpeg may produce no RTP at all before it is
+ * treated as wedged and killed (which routes it into the normal respawn path).
+ *
+ * Process exit is not a sufficient health signal. On macOS, spawning the
+ * WebRTC encoder immediately after Classic's capture is killed can lose the
+ * race to release the avfoundation device; ffmpeg logs
+ *   "[AVFoundation indev] Configuration of video device failed, falling back
+ *    to default"
+ * and then sits there ALIVE, emitting nothing. Nothing in this class noticed:
+ * the exit handler never ran, so no respawn was attempted, and the session
+ * stayed "connected" while the browser PLI'd forever against a stream that
+ * had never carried a single frame.
+ *
+ * Sized generously against real startup cost (process spawn + capture-device
+ * open + first encode) so a merely slow start is never mistaken for a wedge.
+ */
+const NO_DATA_TIMEOUT_MS = 4000;
+
 /** Last non-empty line of a captured stderr blob, for a one-line summary. */
 function lastLine(text: string): string {
   const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
@@ -60,6 +79,14 @@ export class RtpRelay {
   /** Respawns used since the last healthy run; reset by HEALTHY_RUN_MS. */
   private respawns = 0;
   private respawnTimer: NodeJS.Timeout | null = null;
+  /** Fires if the current process produces no RTP; see NO_DATA_TIMEOUT_MS. */
+  private noDataTimer: NodeJS.Timeout | null = null;
+  /**
+   * Set when the watchdog is the one killing ffmpeg, so the exit handler can
+   * tell that SIGKILL apart from stop()'s (both surface as a null exit code,
+   * which is otherwise treated as a deliberate, non-failing shutdown).
+   */
+  private killedForNoData = false;
 
   constructor(
     private readonly kind: "video" | "audio",
@@ -76,6 +103,12 @@ export class RtpRelay {
      * a session that reports itself connected forever.
      */
     private readonly onFatal?: (reason: string) => void,
+    /**
+     * Overrides the no-RTP wedge timeout. Test-only escape hatch so the
+     * watchdog can be exercised without waiting out the production value;
+     * omit in real usage.
+     */
+    private readonly noDataTimeoutMs: number = NO_DATA_TIMEOUT_MS,
   ) {}
 
   async start(track: MediaStreamTrack): Promise<void> {
@@ -103,12 +136,19 @@ export class RtpRelay {
     // first spawn too: replaceRTP() no-ops while the sender has no previous
     // sequence number.
     let announcedSource = false;
+    let sawData = false;
     socket.on("message", (data) => {
       try {
         const packet = RtpPacket.deSerialize(data);
         if (!announcedSource) {
           announcedSource = true;
           track.onSourceChanged.execute(packet.header);
+        }
+        // First packet of this spawn: the encoder is demonstrably alive and
+        // producing, so retire the wedge watchdog.
+        if (!sawData) {
+          sawData = true;
+          this.clearNoDataTimer();
         }
         track.writeRtp(packet);
       } catch (err) {
@@ -153,6 +193,23 @@ export class RtpRelay {
     proc.on("error", (err) => {
       process.stderr.write(`[webrtc:${this.kind}] ffmpeg spawn error: ${String(err)}\n`);
     });
+    // Wedge watchdog for this spawn: an ffmpeg that never emits a packet is
+    // killed so the exit handler below can respawn it with the usual backoff.
+    // Guarded on identity so a timer left over from a superseded process can
+    // never kill the current one.
+    this.clearNoDataTimer();
+    this.noDataTimer = setTimeout(() => {
+      this.noDataTimer = null;
+      if (generation !== this.generation || this.proc !== proc || sawData) return;
+      process.stderr.write(
+        `[webrtc:${this.kind}] no RTP produced within ${this.noDataTimeoutMs}ms — ` +
+          `encoder appears wedged (capture device may have failed to open); restarting\n`,
+      );
+      this.killedForNoData = true;
+      proc.kill("SIGKILL");
+    }, this.noDataTimeoutMs);
+    this.noDataTimer.unref?.();
+
     const spawnedAt = Date.now();
     proc.on("exit", (code) => {
       // Capture identity *before* clearing: stop() sets this.proc to null and
@@ -160,11 +217,19 @@ export class RtpRelay {
       // failure, so only a still-current process exiting non-zero reports.
       const wasCurrent = this.proc === proc;
       if (wasCurrent) this.proc = null;
-      if (code === null || code === 0) return;
+      if (wasCurrent) this.clearNoDataTimer();
+      // A watchdog kill also lands here with a null code (SIGKILL), which
+      // would otherwise read as a deliberate stop() and return silently --
+      // the exact path that let a wedged encoder sit forever. Consume the
+      // flag so it can't leak into a later, genuinely-deliberate exit.
+      const wedged = this.killedForNoData;
+      this.killedForNoData = false;
+      if (!wedged && (code === null || code === 0)) return;
 
       const detail = stderrTail.trim();
       process.stderr.write(
-        `[webrtc:${this.kind}] ffmpeg exited with code ${code}` +
+        `[webrtc:${this.kind}] ffmpeg ` +
+          (wedged ? "killed after producing no RTP" : `exited with code ${code}`) +
           (detail ? `:\n${detail}\n` : "\n"),
       );
       if (!wasCurrent) return;
@@ -176,7 +241,8 @@ export class RtpRelay {
       const summary = lastLine(detail);
       if (this.respawns >= MAX_RESPAWNS) {
         this.onFatal?.(
-          `${this.kind} encoder failed after ${this.respawns} restarts (ffmpeg exit ${code})` +
+          `${this.kind} encoder failed after ${this.respawns} restarts ` +
+            (wedged ? "(produced no RTP)" : `(ffmpeg exit ${code})`) +
             (summary ? `: ${summary}` : ""),
         );
         return;
@@ -201,8 +267,45 @@ export class RtpRelay {
     });
   }
 
+  /**
+   * Respawns ffmpeg against the same track, producing a brand-new stream
+   * that opens with an IDR.
+   *
+   * This is the only way to get a keyframe out of ffmpeg on demand: the CLI
+   * has no "encode an IDR now" input, and `-force_key_frames` only takes a
+   * schedule fixed up front. So a receiver that is genuinely wedged --
+   * PLI-ing past the point where the bounded `-g` should already have
+   * rescued it -- can be recovered only by starting the encoder over.
+   *
+   * Deliberately not wired to fire per-PLI: PLIs arrive in bursts, and a
+   * restart costs a capture-device reopen plus a few hundred ms of black.
+   * WebrtcSession rate-limits this hard; see its reportPictureLoss().
+   *
+   * No-ops if the relay isn't currently attached to a track (never started,
+   * or already stopped), so a late escalation can't resurrect a dead relay.
+   */
+  async restart(): Promise<void> {
+    // Captured before start(), which begins by calling stop() -- and stop()
+    // clears this.track.
+    const track = this.track;
+    if (!track) return;
+    await this.start(track);
+  }
+
+  /** Retires the current spawn's wedge watchdog, if one is pending. */
+  private clearNoDataTimer(): void {
+    if (this.noDataTimer) {
+      clearTimeout(this.noDataTimer);
+      this.noDataTimer = null;
+    }
+  }
+
   stop(): void {
     this.generation++;
+    this.clearNoDataTimer();
+    // Any pending watchdog kill is now moot; leaving this set would make the
+    // next process's deliberate stop() look like a wedge.
+    this.killedForNoData = false;
     if (this.respawnTimer) {
       clearTimeout(this.respawnTimer);
       this.respawnTimer = null;

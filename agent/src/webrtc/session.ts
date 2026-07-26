@@ -11,6 +11,35 @@ const ICE_CONNECT_TIMEOUT_MS = 5000;
 const PLI_LOG_THROTTLE_MS = 2000;
 
 /**
+ * How long a receiver must go on asking for a keyframe before the encoder is
+ * restarted out from under it.
+ *
+ * The bounded `-g` (one IDR per second, see index.ts) already answers ordinary
+ * PLIs: a receiver that lost a keyframe gets the next one within a second and
+ * goes quiet. PLIs still arriving well past that mean the IDRs are not
+ * arriving either -- the encoder is producing nothing decodable at all -- and
+ * no amount of further waiting will fix it. Observed on macOS as a capture
+ * device that failed to open, leaving ffmpeg alive but silent.
+ *
+ * Comfortably more than a couple of GOPs, so ordinary loss never escalates.
+ */
+const PLI_ESCALATE_AFTER_MS = 4000;
+
+/**
+ * Minimum gap between escalation restarts. A restart costs a capture-device
+ * reopen and a few hundred ms of black, and PLIs arrive in bursts, so without
+ * this a wedged session would thrash instead of recovering.
+ */
+const PLI_RESTART_COOLDOWN_MS = 15_000;
+
+/**
+ * A gap this long since the previous PLI ends the current burst. Recovery is
+ * not directly observable -- receivers signal "I need a keyframe", never "I'm
+ * fine now" -- so silence is the only available success signal.
+ */
+const PLI_BURST_GAP_MS = 2500;
+
+/**
  * Strips server-reflexive ("typ srflx") candidate lines from an SDP.
  *
  * Defense-in-depth for `suppressStun()` below: even if that runtime hook
@@ -94,14 +123,12 @@ export class WebrtcSession {
   }
 
   /**
-   * Starts the audio relay (its codec is fixed, so it can start
-   * immediately) and returns the SDP offer to send to the client. The video
-   * relay isn't started here -- which ffmpeg args it needs depends on which
-   * codec tier the browser's answer negotiates, so it's deferred to
-   * setAnswer().
+   * Returns the SDP offer to send to the client. Neither relay is started
+   * here: nothing sent before the transport is connected survives (see
+   * setAnswer()), and the video relay additionally needs the codec tier that
+   * only the answer reveals.
    */
   async createOffer(): Promise<string> {
-    await this.audioRelay.start(this.audioTrack);
     const offer = await this.pc.createOffer();
     await this.pc.setLocalDescription(offer);
     return stripSrflxCandidates(this.pc.localDescription!.sdp);
@@ -190,6 +217,14 @@ export class WebrtcSession {
     );
     await this.videoRelay.start(this.videoTrack);
 
+    // Audio is gated on the connection for the same reason as video: werift
+    // discards anything handed to it pre-DTLS. This was previously started in
+    // createOffer(), which merely wasted the opening moment of audio rather
+    // than breaking it -- Opus has no keyframes, so a receiver recovers on the
+    // next packet. Starting it here also means a session that never connects
+    // no longer holds the loopback capture device open for nothing.
+    await this.audioRelay.start(this.audioTrack);
+
     this.deps.onStateChange(true);
   }
 
@@ -263,27 +298,68 @@ export class WebrtcSession {
    * sender, nothing subscribed, so the one symptom that would have named
    * the "connected but blank" bug immediately was invisible in the logs.
    *
-   * This deliberately does not try to force a keyframe in response: ffmpeg
-   * cannot be asked for an IDR on demand mid-run, and restarting it per PLI
-   * would turn a PLI storm into a capture-restart storm. The bounded `-g` in
-   * index.ts is what answers these (recovery within one second); this is
-   * purely so a recurring failure is attributable rather than silent.
+   * Escalation, rather than a keyframe per PLI. ffmpeg cannot be asked for an
+   * IDR on demand mid-run (the CLI has no such input, and -force_key_frames
+   * only takes a schedule fixed up front), so the only lever available is
+   * restarting the encoder -- which costs a capture-device reopen and a few
+   * hundred ms of black. Doing that per PLI would turn a burst into a restart
+   * storm, so the two cases are separated by how long the PLIs persist:
    *
-   * Throttled because PLIs arrive in bursts -- one per lost keyframe per
-   * receiver -- and an unthrottled write would itself become a problem.
+   *   - Ordinary loss: the bounded `-g` delivers an IDR within a second, the
+   *     receiver decodes again and goes quiet. Logged, nothing else.
+   *   - Genuinely wedged: PLIs continue past PLI_ESCALATE_AFTER_MS, meaning
+   *     the periodic IDRs are not arriving either. Waiting longer cannot help,
+   *     so the encoder is restarted (rate-limited by PLI_RESTART_COOLDOWN_MS).
+   *
+   * Bursts are tracked rather than individual PLIs because receivers only ever
+   * signal "I need a keyframe", never "I recovered" -- a gap in the PLIs is
+   * the only evidence of success available.
+   *
+   * Logging is throttled independently: PLIs arrive one per lost keyframe per
+   * receiver, and an unthrottled write would itself become a problem.
    */
   private reportPictureLoss(): void {
     let count = 0;
     let lastLoggedAt = 0;
+    let burstStartedAt = 0;
+    let lastPliAt = 0;
+    let lastRestartAt = 0;
     this.videoTransceiver.sender.onPictureLossIndication.subscribe(() => {
       count++;
       const now = Date.now();
-      if (now - lastLoggedAt < PLI_LOG_THROTTLE_MS) return;
-      lastLoggedAt = now;
+
+      // A long enough gap since the previous PLI means the receiver recovered
+      // and this is a new problem, not a continuation of the old one.
+      if (burstStartedAt === 0 || now - lastPliAt > PLI_BURST_GAP_MS) {
+        burstStartedAt = now;
+      }
+      lastPliAt = now;
+
+      if (now - lastLoggedAt >= PLI_LOG_THROTTLE_MS) {
+        lastLoggedAt = now;
+        process.stderr.write(
+          `[webrtc:video] client requested a keyframe (PLI x${count}) -- ` +
+            `it cannot decode until the next IDR (<=1s at the configured GOP)\n`,
+        );
+      }
+
+      const stuckFor = now - burstStartedAt;
+      if (stuckFor < PLI_ESCALATE_AFTER_MS) return;
+      if (now - lastRestartAt < PLI_RESTART_COOLDOWN_MS) return;
+      // close() must not be able to trigger a restart on the way out.
+      if (this.closed || !this.videoRelay) return;
+
+      lastRestartAt = now;
+      burstStartedAt = now;
       process.stderr.write(
-        `[webrtc:video] client requested a keyframe (PLI x${count}) -- ` +
-          `it cannot decode until the next IDR (<=1s at the configured GOP)\n`,
+        `[webrtc:video] still unable to decode after ${stuckFor}ms of keyframe ` +
+          `requests — the periodic IDRs are not getting through; restarting the encoder\n`,
       );
+      void this.videoRelay.restart().catch((err) => {
+        process.stderr.write(
+          `[webrtc:video] encoder restart failed: ${err instanceof Error ? err.message : String(err)}\n`,
+        );
+      });
     });
   }
 
