@@ -4,6 +4,23 @@ import { RtpRelay } from "./rtpRelay.js";
 
 const ICE_CONNECT_TIMEOUT_MS = 5000;
 
+/**
+ * Strips server-reflexive ("typ srflx") candidate lines from an SDP.
+ *
+ * Defense-in-depth for `suppressStun()` below: even if that runtime hook
+ * ever stops working (e.g. a future werift upgrade restructures its
+ * internals), a srflx candidate -- which would carry the host's public IP
+ * -- must never reach the client. This project restricts WebRTC to
+ * LAN/Tailscale, so only "host" (LAN-local) candidates are ever useful;
+ * srflx candidates are both unnecessary and a privacy leak here.
+ */
+function stripSrflxCandidates(sdp: string): string {
+  return sdp
+    .split("\r\n")
+    .filter((line) => !(line.startsWith("a=candidate:") && line.includes(" typ srflx ")))
+    .join("\r\n");
+}
+
 export interface WebrtcSessionDeps {
   /** Full ffmpeg args (input + `-f rtp rtp://127.0.0.1:<port>` output) for video. */
   videoFfmpegArgs: (port: number) => string[];
@@ -36,6 +53,7 @@ export class WebrtcSession {
     this.audioTrack = new MediaStreamTrack({ kind: "audio" });
     this.pc.addTransceiver(this.videoTrack, { direction: "sendonly" });
     this.pc.addTransceiver(this.audioTrack, { direction: "sendonly" });
+    this.suppressStun();
     this.videoRelay = new RtpRelay("video", deps.videoFfmpegArgs);
     this.audioRelay = new RtpRelay("audio", deps.audioFfmpegArgs);
 
@@ -60,7 +78,7 @@ export class WebrtcSession {
     ]);
     const offer = await this.pc.createOffer();
     await this.pc.setLocalDescription(offer);
-    return this.pc.localDescription!.sdp;
+    return stripSrflxCandidates(this.pc.localDescription!.sdp);
   }
 
   /** Applies the client's answer and waits for ICE to actually connect. */
@@ -122,5 +140,51 @@ export class WebrtcSession {
     if (this.failed) return;
     this.failed = true;
     this.deps.onStateChange(false, err);
+  }
+
+  /**
+   * Prevents werift from ever querying an external STUN server.
+   *
+   * werift-ice hardcodes a fallback to Google's public STUN server
+   * (`stun.l.google.com:19302`) whenever no `stunServer` is configured --
+   * this is NOT avoided by passing `iceServers: []` (verified empirically:
+   * `validateAddress(undefined) ?? ["stun.l.google.com", 19302]` in
+   * werift-ice's ice.js always falls back). Left unpatched, every session
+   * would query Google and put the host's public IP into the SDP offer as
+   * a server-reflexive (srflx) candidate -- contradicting this project's
+   * "no relay server, no external dependency" design (WebRTC here is
+   * restricted to LAN/Tailscale, where only "host" candidates are useful).
+   *
+   * There is no supported `RTCConfiguration` flag to disable STUN
+   * gathering, and redirecting/blocking the query (e.g. pointing
+   * `iceServers` at an unreachable address) doesn't help either: werift's
+   * retry logic ignores the send/lookup failure and still blocks on
+   * ice.js's hardcoded 5s gather timeout regardless of *why* the request
+   * failed (verified empirically -- both an unreachable loopback target and
+   * a synchronously-failing DNS lookup still took ~5s).
+   *
+   * Instead, each transceiver's `RTCIceTransport` exposes its underlying
+   * ice.js `Connection` via a public (if untyped-as-mutable) `.connection`
+   * field, which has a plain, assignable `stunServer` property. Setting it
+   * to `false` short-circuits werift-ice's `if (stunServer)` gather check
+   * entirely: no STUN request is ever sent (confirmed via a `dns.lookup`
+   * hook -- zero lookups for `stun.l.google.com`), no srflx candidate is
+   * ever produced, and gathering finishes in milliseconds instead of
+   * stalling for 5s.
+   *
+   * This reaches past werift's public types into a field its `.d.ts`
+   * doesn't advertise as writable, so it's wrapped in try/catch and backed
+   * by `stripSrflxCandidates()` in `createOffer()` as a second line of
+   * defense in case a future werift version restructures this shape and
+   * this hook silently stops working.
+   */
+  private suppressStun(): void {
+    for (const transport of this.pc.iceTransports) {
+      try {
+        (transport.connection as { stunServer?: unknown }).stunServer = false;
+      } catch {
+        // Best-effort; stripSrflxCandidates() in createOffer() is the fallback.
+      }
+    }
   }
 }
