@@ -50,3 +50,36 @@ test("win: returns null when only a normal mic is present", () => {
 [dshow @ 0x1]  "Microphone (Realtek Audio)"`;
   assert.equal(parseWindowsLoopbackName(list), null);
 });
+
+test("win: finds VB-Cable A+B pack's CABLE-A/CABLE-B Output", () => {
+  const list = `[dshow @ 0x1] DirectShow audio devices
+[dshow @ 0x1]  "Microphone (Realtek Audio)"
+[dshow @ 0x1]  "CABLE-A Output (VB-Audio Cable A)"`;
+  assert.equal(parseWindowsLoopbackName(list), "CABLE-A Output (VB-Audio Cable A)");
+});
+
+test("win: finds VoiceMeeter's virtual output", () => {
+  const list = `[dshow @ 0x1] DirectShow audio devices
+[dshow @ 0x1]  "VoiceMeeter Output (VB-Audio VoiceMeeter VAIO)"`;
+  assert.equal(
+    parseWindowsLoopbackName(list),
+    "VoiceMeeter Output (VB-Audio VoiceMeeter VAIO)",
+  );
+});
+
+test("win: finds the built-in Stereo Mix device", () => {
+  const list = `[dshow @ 0x1] DirectShow audio devices
+[dshow @ 0x1]  "Stereo Mix (Realtek Audio)"`;
+  assert.equal(parseWindowsLoopbackName(list), "Stereo Mix (Realtek Audio)");
+});
+
+test("win: skips the Alternative name line, doesn't misread it as the device name", () => {
+  const list = `[dshow @ 0x1] DirectShow audio devices
+[dshow @ 0x1]  "CABLE Output (VB-Audio Virtual Cable)"
+[dshow @ 0x1]     Alternative name "@device_cm_ip_true_pin:{05BAB6}\\wave:{CABLE}"
+[dshow @ 0x1]  "Microphone (Realtek Audio)"`;
+  assert.equal(
+    parseWindowsLoopbackName(list),
+    "CABLE Output (VB-Audio Virtual Cable)",
+  );
+});
