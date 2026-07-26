@@ -91,7 +91,18 @@ export class WebrtcSession {
 
   /** Applies the client's answer and waits for ICE to actually connect. */
   async setAnswer(sdp: string): Promise<void> {
-    await this.pc.setRemoteDescription({ type: "answer", sdp });
+    try {
+      await this.pc.setRemoteDescription({ type: "answer", sdp });
+    } catch (err) {
+      // No silent fallback: setRemoteDescription() can throw before
+      // awaitConnected() (the only other place on this path that reports)
+      // ever runs -- e.g. werift's codec-negotiation failing outright when
+      // the remote answer has no codec in common with ours. Without this,
+      // the caller's catch block would swallow the rejection under the
+      // (here false) assumption that onStateChange was already called.
+      this.reportFailure(`WebRTC setAnswer failed: ${err instanceof Error ? err.message : String(err)}`);
+      throw err;
+    }
     await this.awaitConnected();
     // A successful connect means any earlier failure latch (e.g. a
     // transient "disconnected" blip before the first "connected") no
