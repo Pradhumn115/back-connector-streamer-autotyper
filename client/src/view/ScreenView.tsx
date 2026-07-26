@@ -31,6 +31,9 @@ interface ScreenViewProps {
   transportGateDisabled: boolean;
   webrtcStream: MediaStream | null;
   videoRef: React.RefObject<HTMLVideoElement>;
+  /** Whether the WebRTC <video> element plays its audio track out loud. Independent of transcription. */
+  webrtcAudioEnabled: boolean;
+  onToggleWebrtcAudio: (enabled: boolean) => void;
 }
 
 // Interval used for each mode (matches guidance in the protocol notes).
@@ -66,6 +69,8 @@ export function ScreenView({
   transportGateDisabled,
   webrtcStream,
   videoRef,
+  webrtcAudioEnabled,
+  onToggleWebrtcAudio,
 }: ScreenViewProps) {
   const targetFps = Math.min(MAX_FPS, Math.max(1, Math.round(refreshHz ?? 60)));
   const [fps, setFps] = useState<number>(0);
@@ -309,6 +314,17 @@ export function ScreenView({
                   </b>
                 </span>
               )}
+              <button
+                className="btn btn-ghost btn-xs"
+                onClick={() => onToggleWebrtcAudio(!webrtcAudioEnabled)}
+                title={
+                  webrtcAudioEnabled
+                    ? "Mute agent audio playback"
+                    : "Unmute agent audio playback (independent of transcription)"
+                }
+              >
+                {webrtcAudioEnabled ? "🔊 Audio on" : "🔇 Audio off"}
+              </button>
             </>
           ) : (
             <>
@@ -345,7 +361,7 @@ export function ScreenView({
             tabIndex={0}
             autoPlay
             playsInline
-            muted={false}
+            muted={!webrtcAudioEnabled}
             className={controlEnabled ? "canvas controllable" : "canvas"}
           />
         ) : (

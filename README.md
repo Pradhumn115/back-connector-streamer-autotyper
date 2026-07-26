@@ -31,7 +31,13 @@ view its screen, control its mouse/keyboard, and run a human-like autotyper.
   - **WebRTC** — a real peer connection (**H.264 video + Opus audio**, agent side
     via `werift` + ffmpeg RTP). Lower latency and bandwidth over the internet.
     Toggle Classic ⇄ WebRTC in the client; on any WebRTC error it falls back to
-    Classic (no silent failure).
+    Classic (no silent failure). The offer lists multiple H.264 quality tiers,
+    so each browser negotiates the best one it actually supports — full
+    native-resolution/high-fps on Chrome/Edge, falling back to a universal
+    baseline profile on Safari and anything else, instead of one fixed codec
+    breaking one browser or another. Playing the agent's audio out loud is a
+    separate, off-by-default toggle (🔊/🔇) next to the video — independent of
+    live transcription, which taps the same track regardless.
 - **Remote control** — mouse and keyboard forwarded to the agent, mapped 1:1
   (click, double-click, right-click, drag) with resolution-independent
   coordinates.
@@ -173,7 +179,9 @@ Then:
 - **Lock agent's local input:** blocks the physical keyboard/mouse at the agent
   so only you (the client) drive it. See below.
 - **Transcribe audio:** live text transcript of whatever is playing on the
-  agent, produced by a speech model running in your browser. See below.
+  agent, produced by a speech model running in your browser. Both **Live**
+  (continuous, VAD-gated) and **Record** (buffer a take, transcribe on pause)
+  modes work identically under Classic and WebRTC. See below.
 - **Diagnostics:** runs on connect (and on demand) — checks the connection,
   frames, ffmpeg, capture engine, permissions, input-lock, and audio device, and
   shows the fix for anything wrong. Includes a *Copy* button for the report.
@@ -210,8 +218,15 @@ native `CGEventTap` on macOS / `EVIOCGRAB` on Linux.)
 The client's **"Transcribe audio"** toggle captures whatever is playing on the
 agent (system output) and turns it into a live text transcript. The speech model
 (**Whisper**, via `@huggingface/transformers`) runs **entirely in your browser** —
-the audio is transcribed locally and **never leaves the client**. There is no
-playback; audio is streamed only to feed the model.
+the audio is transcribed locally and **never leaves the client**. Transcription
+itself never plays audio; it only feeds the model. Under **WebRTC**, the video
+element carries a separate, off-by-default 🔊/🔇 toggle if you actually want to
+hear the agent's audio out loud — that's independent of transcription, which
+taps the same track either way.
+
+Both **Live** and **Record** modes work the same whether you're on Classic or
+WebRTC — switching transport mid-session doesn't interrupt an active
+transcription; it just keeps consuming whichever audio path is currently live.
 
 **How it works:** the agent captures its loopback audio with ffmpeg as 16 kHz
 mono PCM and streams it to the client, which resamples nothing (already Whisper's

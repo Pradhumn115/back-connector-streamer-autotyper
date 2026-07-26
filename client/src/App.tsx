@@ -49,6 +49,11 @@ export function App() {
   const [mode, setMode] = useState<StreamMode>("screenshot");
   const [controlEnabled, setControlEnabled] = useState<boolean>(false);
   const [panelOpen, setPanelOpen] = useState<boolean>(true);
+  // Whether the WebRTC <video> element plays its audio track out loud.
+  // Defaults off so agent-side audio doesn't start blasting through the
+  // client's speakers the moment WebRTC connects; independent of
+  // transcription, which taps the same track separately regardless of this.
+  const [webrtcAudioEnabled, setWebrtcAudioEnabled] = useState<boolean>(false);
 
   // Wire mouse/keyboard to whichever surface is active for the current
   // transport; gated by the control toggle. Control (mouse/keyboard/autotype/
@@ -94,36 +99,20 @@ export function App() {
   }, [webrtc.status]);
 
   // Tap the WebRTC audio track into the existing (unmodified) transcription
-  // pipeline whenever a stream is live; live captions start automatically.
-  // We snapshot whatever Classic-mode transcription state was active before
-  // switching (mode + whether live captions were on) and restore it on the
-  // way back out, so a Classic -> WebRTC -> Classic round-trip doesn't
-  // silently drop a live-caption session the user already had running.
-  // `audioTx.setMode` (not just startLive's internal ref) is used so the
-  // hook's `mode` state and `modeRef` stay in sync — startLive alone only
-  // updates modeRef, which desyncs the UI's mode indicator from actual
-  // behavior.
+  // pipeline whenever a stream is live, feeding the same pushFrame() the
+  // Classic PCM-over-WS path uses. Unlike Classic mode, WebRTC audio already
+  // flows continuously as part of the peer connection -- there's no agent-side
+  // start/stop signal to send, so the tap is unconditional whenever a stream
+  // exists. pushFrame() itself gates on audioTx's mode/liveActive/recording
+  // refs, so tapping while the user hasn't turned on transcription is a
+  // harmless no-op. This deliberately does NOT touch audioTx's mode/live/
+  // record state on entry or exit: whatever the user had going (live
+  // captions on, a recording in progress, or neither) carries straight
+  // through a transport switch instead of being forced then restored.
   useEffect(() => {
     if (transport !== "webrtc" || !webrtc.stream) return;
-    const cleanup = tapWebrtcAudioForTranscription(webrtc.stream, audioTx.pushFrame);
-    const prevMode = audioTx.mode;
-    const prevLiveActive = audioTx.liveActive;
-    audioTx.setMode("live");
-    audioTx.startLive();
-    return () => {
-      cleanup();
-      audioTx.stopLive();
-      if (prevMode !== "live") {
-        // setMode() itself stops live/record and resets buffers, which is
-        // the correct "clean switch back" behavior for record mode.
-        audioTx.setMode(prevMode);
-      } else if (prevLiveActive) {
-        // Was already live-captioning before entering WebRTC: resume it.
-        audioTx.startLive();
-      }
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [transport, webrtc.stream]);
+    return tapWebrtcAudioForTranscription(webrtc.stream, audioTx.pushFrame);
+  }, [transport, webrtc.stream, audioTx.pushFrame]);
 
   // On (re)connect, tell the agent the current mode so streaming starts, and
   // auto-run diagnostics once so the panel is populated without a manual press.
@@ -167,35 +156,49 @@ export function App() {
       conn.stopWebrtc();
       webrtc.stop();
       conn.send({ type: "setMode", mode, intervalMs: intervalForMode(mode, refreshHz) });
+      // Transcription state (live captions on, or a recording in progress)
+      // carries straight through the transport switch (see the WebRTC tap
+      // effect above), but the agent itself stopped pushing Classic PCM the
+      // moment WebRTC started (handleStartWebrtc() calls audio.stop()) and
+      // was never told to resume it -- WebRTC audio needed no such signal.
+      // Ask it to resume now, or the transcript would otherwise go silently
+      // dark on the way back to Classic.
+      if (audioTx.liveActive || audioTx.recording) conn.setAudio(true);
     }
   };
 
-  // Live captions: continuous, VAD-gated transcription.
+  // Live captions: continuous, VAD-gated transcription. Under WebRTC, audio
+  // already flows continuously as part of the peer connection -- there's no
+  // agent-side stream to start/stop, and the agent actively rejects setAudio
+  // while a WebRTC session is active ("Classic audio is paused while WebRTC
+  // is active"), so that call only applies to Classic mode.
   const onToggleLive = (on: boolean) => {
     if (on) {
       audioTx.startLive();
-      conn.setAudio(true); // ask the agent to stream loopback audio
+      if (transport === "classic") conn.setAudio(true);
     } else {
-      conn.setAudio(false);
+      if (transport === "classic") conn.setAudio(false);
       audioTx.stopLive();
     }
   };
 
   // Record mode: buffer the take while recording; transcribe it on pause.
+  // Same Classic-only caveat as onToggleLive above.
   const onRecordToggle = () => {
     if (audioTx.recording) {
-      conn.setAudio(false);
+      if (transport === "classic") conn.setAudio(false);
       void audioTx.pauseRecording();
     } else {
       audioTx.startRecording();
-      conn.setAudio(true);
+      if (transport === "classic") conn.setAudio(true);
     }
   };
 
-  // Switching modes stops any active capture/transcription first.
+  // Switching modes stops any active capture/transcription first. Same
+  // Classic-only caveat as onToggleLive/onRecordToggle above.
   const onSwitchMode = (next: "live" | "record") => {
     if (next === audioTx.mode) return;
-    conn.setAudio(false);
+    if (transport === "classic") conn.setAudio(false);
     audioTx.setMode(next);
   };
 
@@ -335,6 +338,8 @@ export function App() {
             }
             webrtcStream={webrtc.stream}
             videoRef={videoRef}
+            webrtcAudioEnabled={webrtcAudioEnabled}
+            onToggleWebrtcAudio={setWebrtcAudioEnabled}
           />
         </main>
 
@@ -385,14 +390,14 @@ export function App() {
                 <button
                   className={audioTx.mode === "live" ? "active" : ""}
                   onClick={() => onSwitchMode("live")}
-                  disabled={transport === "webrtc" || !connected || !conn.audio.supported}
+                  disabled={!connected || !conn.audio.supported}
                 >
                   Live
                 </button>
                 <button
                   className={audioTx.mode === "record" ? "active" : ""}
                   onClick={() => onSwitchMode("record")}
-                  disabled={transport === "webrtc" || !connected || !conn.audio.supported}
+                  disabled={!connected || !conn.audio.supported}
                 >
                   Record
                 </button>
@@ -405,7 +410,7 @@ export function App() {
                   type="checkbox"
                   checked={audioTx.liveActive}
                   onChange={(e) => onToggleLive(e.target.checked)}
-                  disabled={transport === "webrtc" || !connected || !conn.audio.supported}
+                  disabled={!connected || !conn.audio.supported}
                 />
                 <span className="switch-track" />
                 <span className="switch-label">Live captions</span>
@@ -415,9 +420,7 @@ export function App() {
                 <button
                   className={`btn ${audioTx.recording ? "btn-danger" : "btn-primary"}`}
                   onClick={onRecordToggle}
-                  disabled={
-                    transport === "webrtc" || !connected || !conn.audio.supported || audioTx.transcribing
-                  }
+                  disabled={!connected || !conn.audio.supported || audioTx.transcribing}
                 >
                   {audioTx.recording ? "⏸ Pause & transcribe" : "⏺ Record"}
                 </button>
@@ -428,21 +431,19 @@ export function App() {
             )}
 
             <p className={`hint ${audioTx.status === "error" ? "warn" : ""}`}>
-              {transport === "webrtc"
-                ? "Transcribing the WebRTC audio track automatically."
-                : connected && !conn.audio.supported
-                  ? "No loopback device on the agent — install BlackHole (macOS) / VB-Cable (Windows). See README."
-                  : audioTx.status === "loading"
-                    ? `Loading speech model… ${audioTx.progress}%`
-                    : audioTx.status === "error"
-                      ? `Model error: ${audioTx.error ?? "failed to load"}`
-                      : audioTx.transcribing
-                        ? "Transcribing the recording…"
-                        : audioTx.mode === "record"
-                          ? "Record a take, then Pause to transcribe the whole thing."
-                          : audioTx.status === "ready"
-                            ? `Live captions${audioTx.device ? ` · ${audioTx.device}` : ""} — speech only, silence skipped.`
-                            : "Transcribes whatever's playing on the agent to text, in your browser."}
+              {connected && !conn.audio.supported
+                ? "No loopback device on the agent — install BlackHole (macOS) / VB-Cable (Windows). See README."
+                : audioTx.status === "loading"
+                  ? `Loading speech model… ${audioTx.progress}%`
+                  : audioTx.status === "error"
+                    ? `Model error: ${audioTx.error ?? "failed to load"}`
+                    : audioTx.transcribing
+                      ? "Transcribing the recording…"
+                      : audioTx.mode === "record"
+                        ? "Record a take, then Pause to transcribe the whole thing."
+                        : audioTx.status === "ready"
+                          ? `Live captions${audioTx.device ? ` · ${audioTx.device}` : ""} — speech only, silence skipped.`
+                          : "Transcribes whatever's playing on the agent to text, in your browser."}
             </p>
 
             {(audioTx.transcript || audioTx.status === "ready" || audioTx.transcribing) && (
