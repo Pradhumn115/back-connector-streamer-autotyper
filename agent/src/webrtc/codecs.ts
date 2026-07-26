@@ -1,15 +1,25 @@
 import { RTCRtpCodecParameters } from "werift";
 
 /**
- * H264 constrained-baseline (profile-level-id 42e01f), packetization-mode 1 —
+ * H264 constrained-baseline (profile-level-id 42e028), packetization-mode 1 —
  * the combination every Chromium/Firefox/Safari WebRTC stack accepts, and what
- * ffmpeg's libx264 with `-profile:v baseline -level 3.1` produces.
+ * ffmpeg's libx264 with `-profile:v baseline -level 4.0` produces.
+ *
+ * The level byte (the last two hex digits) MUST match the `-level` flag given
+ * to ffmpeg in index.ts's webrtcFfmpegArgs.video. Level 3.1 (hex 1f) was
+ * tried first but its 108,000 MB/s macroblock-rate limit is well below what's
+ * needed to encode a real screen capture (e.g. 1728x1117@30fps) — libx264
+ * doesn't error out on this, it just warns and hangs forever without ever
+ * emitting RTP output. Level 4.0 (decimal level_idc 40 -> hex 28) comfortably
+ * covers 1080p-class resolutions and is universally supported by WebRTC
+ * decoders, and since this app controls both the offering/encoding side and
+ * the SDP declaration, there's no compatibility downside to using it.
  */
 export const VIDEO_CODEC = new RTCRtpCodecParameters({
   mimeType: "video/H264",
   clockRate: 90000,
   payloadType: 96,
-  parameters: "profile-level-id=42e01f;packetization-mode=1;level-asymmetry-allowed=1",
+  parameters: "profile-level-id=42e028;packetization-mode=1;level-asymmetry-allowed=1",
   rtcpFeedback: [
     { type: "ccm", parameter: "fir" },
     { type: "nack" },

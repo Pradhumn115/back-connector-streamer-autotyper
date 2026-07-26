@@ -65,7 +65,12 @@ async function main(): Promise<void> {
       "-vf", `fps=${WEBRTC_VIDEO_FPS}`,
       "-c:v", "libx264",
       "-profile:v", "baseline",
-      "-level", "3.1",
+      // Must stay in sync with the profile-level-id level byte in
+      // webrtc/codecs.ts's VIDEO_CODEC (0x28 = level 4.0). Level 3.1 was
+      // tried first but its macroblock-rate limit can't sustain real screen
+      // capture resolutions (e.g. 1728x1117@30fps) — libx264 silently hangs
+      // instead of erroring, so it never emits RTP output. See codecs.ts.
+      "-level", "4.0",
       "-preset", "ultrafast",
       "-tune", "zerolatency",
       "-f", "rtp",
