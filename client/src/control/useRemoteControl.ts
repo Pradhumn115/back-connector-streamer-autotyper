@@ -5,6 +5,7 @@ import { mapToNormalized } from "./mapCoords";
 
 type Modifier = "ctrl" | "alt" | "shift" | "meta";
 type SendFn = (msg: ClientMessage) => void;
+type ControlSurface = HTMLCanvasElement | HTMLVideoElement;
 
 // Throttle mousemove to ~50/s to avoid flooding the socket.
 const MOVE_INTERVAL_MS = 20;
@@ -37,7 +38,7 @@ function collectModifiers(e: KeyboardEvent): Modifier[] {
  * whenever the screen's aspect ratio differs from the canvas's.
  */
 function normalizedCoords(
-  canvas: HTMLCanvasElement,
+  canvas: ControlSurface,
   content: ContentRect,
   clientX: number,
   clientY: number,
@@ -60,7 +61,7 @@ function normalizedCoords(
  * control. Keyboard events are captured only while the canvas is focused.
  */
 export function useRemoteControl(
-  canvasRef: React.RefObject<HTMLCanvasElement>,
+  canvasRef: React.RefObject<ControlSurface>,
   contentRectRef: React.MutableRefObject<ContentRect>,
   send: SendFn,
   enabled: boolean,
@@ -163,22 +164,22 @@ export function useRemoteControl(
       });
     };
 
-    canvas.addEventListener("mousemove", onMouseMove);
-    canvas.addEventListener("mousedown", onMouseDown);
-    canvas.addEventListener("mouseup", onMouseUp);
-    canvas.addEventListener("contextmenu", onContextMenu);
-    canvas.addEventListener("wheel", onWheel, { passive: false });
-    canvas.addEventListener("keydown", onKeyDown);
-    canvas.addEventListener("keyup", onKeyUp);
+    (canvas as HTMLElement).addEventListener("mousemove", onMouseMove);
+    (canvas as HTMLElement).addEventListener("mousedown", onMouseDown);
+    (canvas as HTMLElement).addEventListener("mouseup", onMouseUp);
+    (canvas as HTMLElement).addEventListener("contextmenu", onContextMenu);
+    (canvas as HTMLElement).addEventListener("wheel", onWheel, { passive: false });
+    (canvas as HTMLElement).addEventListener("keydown", onKeyDown);
+    (canvas as HTMLElement).addEventListener("keyup", onKeyUp);
 
     return () => {
-      canvas.removeEventListener("mousemove", onMouseMove);
-      canvas.removeEventListener("mousedown", onMouseDown);
-      canvas.removeEventListener("mouseup", onMouseUp);
-      canvas.removeEventListener("contextmenu", onContextMenu);
-      canvas.removeEventListener("wheel", onWheel);
-      canvas.removeEventListener("keydown", onKeyDown);
-      canvas.removeEventListener("keyup", onKeyUp);
+      (canvas as HTMLElement).removeEventListener("mousemove", onMouseMove);
+      (canvas as HTMLElement).removeEventListener("mousedown", onMouseDown);
+      (canvas as HTMLElement).removeEventListener("mouseup", onMouseUp);
+      (canvas as HTMLElement).removeEventListener("contextmenu", onContextMenu);
+      (canvas as HTMLElement).removeEventListener("wheel", onWheel);
+      (canvas as HTMLElement).removeEventListener("keydown", onKeyDown);
+      (canvas as HTMLElement).removeEventListener("keyup", onKeyUp);
     };
   }, [canvasRef]);
 }
