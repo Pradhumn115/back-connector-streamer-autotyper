@@ -72,6 +72,13 @@ export function ScreenView({
   const frameTimesRef = useRef<number[]>([]);
   const lastSeqRef = useRef<number>(-1);
 
+  // Real fps for WebRTC video, computed from actual decoded frame callbacks
+  // (rvfc) rather than the Classic `fps` state above, which is never updated
+  // in WebRTC mode since no `frame` (JPEG-over-WS) messages arrive then.
+  const [webrtcFps, setWebrtcFps] = useState<number | null>(null);
+  const [webrtcResolution, setWebrtcResolution] = useState<{ w: number; h: number } | null>(null);
+  const webrtcFrameTimesRef = useRef<number[]>([]);
+
   // Attach the WebRTC MediaStream to the <video> element whenever it changes.
   // `transport` is in the deps too: switching Classic -> WebRTC -> Classic ->
   // WebRTC unmounts/remounts the <video> element (ScreenView renders either
@@ -125,6 +132,60 @@ export function ScreenView({
       resizeObserver.disconnect();
     };
   }, [transport, webrtcStream, videoRef, contentRectRef]);
+
+  // Track real WebRTC video fps + resolution from actual decoded frames via
+  // requestVideoFrameCallback (Chrome/Edge only — feature-detected below; on
+  // browsers without it we simply omit the fps figure rather than crash).
+  useEffect(() => {
+    if (transport !== "webrtc") {
+      setWebrtcFps(null);
+      setWebrtcResolution(null);
+      webrtcFrameTimesRef.current = [];
+      return;
+    }
+    const video = videoRef.current as
+      | (HTMLVideoElement & {
+          requestVideoFrameCallback?: (
+            cb: (now: number, metadata: { width: number; height: number }) => void
+          ) => number;
+          cancelVideoFrameCallback?: (handle: number) => void;
+        })
+      | null;
+    if (!video || typeof video.requestVideoFrameCallback !== "function") {
+      setWebrtcFps(null);
+      return;
+    }
+
+    webrtcFrameTimesRef.current = [];
+    let handle: number | null = null;
+    let cancelled = false;
+
+    const onFrame = (_now: number, metadata: { width: number; height: number }) => {
+      if (cancelled) return;
+      setWebrtcResolution({ w: metadata.width, h: metadata.height });
+
+      // Same rolling ~2s window pattern as the Classic fps logic above.
+      const nowMs = performance.now();
+      const times = webrtcFrameTimesRef.current;
+      times.push(nowMs);
+      while (times.length > 0 && nowMs - times[0] > 2000) times.shift();
+      if (times.length >= 2) {
+        const span = (times[times.length - 1] - times[0]) / 1000;
+        setWebrtcFps(span > 0 ? (times.length - 1) / span : 0);
+      }
+
+      handle = video.requestVideoFrameCallback!(onFrame);
+    };
+
+    handle = video.requestVideoFrameCallback(onFrame);
+
+    return () => {
+      cancelled = true;
+      if (handle !== null && typeof video.cancelVideoFrameCallback === "function") {
+        video.cancelVideoFrameCallback(handle);
+      }
+    };
+  }, [transport, webrtcStream, videoRef]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -230,21 +291,44 @@ export function ScreenView({
           </button>
         </div>
         <div className="readout">
-          <span>
-            mode <b>{mode}</b>
-          </span>
-          <span>
-            fps <b>{fps.toFixed(1)}</b>
-          </span>
-          {mode === "video" && (
-            <span>
-              target <b>{targetFps}</b>
-            </span>
-          )}
-          {frame && (
-            <span>
-              seq <b>{frame.seq}</b>
-            </span>
+          {transport === "webrtc" ? (
+            <>
+              <span>
+                transport <b>WebRTC</b>
+              </span>
+              {webrtcFps !== null && (
+                <span>
+                  fps <b>{webrtcFps.toFixed(1)}</b>
+                </span>
+              )}
+              {webrtcResolution && (
+                <span>
+                  res{" "}
+                  <b>
+                    {webrtcResolution.w}x{webrtcResolution.h}
+                  </b>
+                </span>
+              )}
+            </>
+          ) : (
+            <>
+              <span>
+                mode <b>{mode}</b>
+              </span>
+              <span>
+                fps <b>{fps.toFixed(1)}</b>
+              </span>
+              {mode === "video" && (
+                <span>
+                  target <b>{targetFps}</b>
+                </span>
+              )}
+              {frame && (
+                <span>
+                  seq <b>{frame.seq}</b>
+                </span>
+              )}
+            </>
           )}
           <span>
             ctrl{" "}
