@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { pcmS16ToFloat32, AudioWindower } from "./pcm.js";
+import { pcmS16ToFloat32, float32ToPcmS16, AudioWindower } from "./pcm.js";
 
 /** Build a little-endian s16 byte buffer from sample values. */
 function s16(samples: number[]): Uint8Array {
@@ -64,4 +64,13 @@ test("AudioWindower.reset clears buffered samples", () => {
   w.push(new Float32Array([1, 2]));
   w.reset();
   assert.deepEqual(w.push(new Float32Array([9, 9])), []);
+});
+
+test("float32ToPcmS16 round-trips through pcmS16ToFloat32", () => {
+  const original = new Float32Array([0, 0.5, -0.5, 0.999, -1]);
+  const bytes = float32ToPcmS16(original);
+  const back = pcmS16ToFloat32(bytes);
+  for (let i = 0; i < original.length; i++) {
+    assert.ok(Math.abs(back[i] - original[i]) < 0.001, `sample ${i}`);
+  }
 });
