@@ -454,6 +454,22 @@ export function App() {
               </div>
             )}
 
+            {/* Play back the last take. The same audio that was transcribed,
+                kept as a WAV so a wrong-looking transcript can be checked
+                against what was actually captured. */}
+            {audioTx.mode === "record" && audioTx.recordingUrl && (
+              <div className="playback">
+                <audio controls src={audioTx.recordingUrl} className="playback-audio" />
+                <a
+                  className="btn btn-ghost btn-xs"
+                  href={audioTx.recordingUrl}
+                  download="recording.wav"
+                >
+                  Download
+                </a>
+              </div>
+            )}
+
             <p className={`hint ${audioTx.status === "error" ? "warn" : ""}`}>
               {connected && !conn.audio.supported
                 ? "No loopback device on the agent — install BlackHole (macOS) / VB-Cable (Windows). See README."

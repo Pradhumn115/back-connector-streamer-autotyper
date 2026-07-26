@@ -339,6 +339,18 @@ body::after {
   gap: 12px;
   margin-top: 4px;
 }
+/* Playback of the last recorded take */
+.playback {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+.playback-audio {
+  flex: 1;
+  min-width: 0;
+  height: 32px;
+}
 .record-time {
   font-family: var(--mono);
   font-size: 13px;

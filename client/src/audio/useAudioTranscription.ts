@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { DecodedAudioFrame } from "@bcsa/shared";
 import { pcmS16ToFloat32 } from "./pcm";
+import { encodeWav } from "./wav";
 import { segmentSpeech, concatFloat32, tailRms } from "./vad";
 import type { ModelKey } from "./transcriberWorker";
 
@@ -40,6 +41,12 @@ export interface UseAudioTranscription {
   elapsedMs: number;
   startRecording: () => void;
   pauseRecording: () => void;
+  /**
+   * Object URL of the last completed take as a WAV, for playing it back —
+   * null until one finishes. Owned by this hook: it's revoked when replaced,
+   * on reset(), and on unmount, so consumers must not revoke it themselves.
+   */
+  recordingUrl: string | null;
   // frame ingestion (stable identity, safe to pass to useConnection)
   pushFrame: (frame: DecodedAudioFrame) => void;
 }
@@ -72,6 +79,11 @@ export function useAudioTranscription(): UseAudioTranscription {
   const [recording, setRecording] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
   const [elapsedMs, setElapsedMs] = useState(0);
+  const [recordingUrl, setRecordingUrl] = useState<string | null>(null);
+  // Mirrors recordingUrl so cleanup paths can revoke the current URL without
+  // taking a dependency on the state value (which would restart effects and
+  // re-run callbacks every time a take finishes).
+  const recordingUrlRef = useRef<string | null>(null);
 
   const workerRef = useRef<Worker | null>(null);
   // Models the worker has confirmed as loaded/ready; switching to one of
@@ -222,6 +234,17 @@ export function useAudioTranscription(): UseAudioTranscription {
     }
   }, []);
 
+  /**
+   * Replace the retained take, revoking the previous object URL first.
+   * Browsers keep the blob alive for the lifetime of its URL, so skipping the
+   * revoke would pin every take's audio in memory for the whole session.
+   */
+  const setRetainedRecording = useCallback((url: string | null) => {
+    if (recordingUrlRef.current) URL.revokeObjectURL(recordingUrlRef.current);
+    recordingUrlRef.current = url;
+    setRecordingUrl(url);
+  }, []);
+
   const clearElapsedTimer = useCallback(() => {
     if (elapsedTimerRef.current != null) {
       window.clearInterval(elapsedTimerRef.current);
@@ -254,6 +277,9 @@ export function useAudioTranscription(): UseAudioTranscription {
     modeRef.current = "record";
     recordingRef.current = true;
     recordChunksRef.current = [];
+    // Drop the previous take as soon as a new one starts, so the player never
+    // shows stale audio that no longer matches the transcript below it.
+    setRetainedRecording(null);
     setRecording(true);
     recordStartRef.current = Date.now();
     setElapsedMs(0);
@@ -263,7 +289,7 @@ export function useAudioTranscription(): UseAudioTranscription {
       200,
     );
     loadModel();
-  }, [loadModel, clearElapsedTimer]);
+  }, [loadModel, clearElapsedTimer, setRetainedRecording]);
 
   const pauseRecording = useCallback(async () => {
     recordingRef.current = false;
@@ -272,6 +298,12 @@ export function useAudioTranscription(): UseAudioTranscription {
     const audio = concatFloat32(recordChunksRef.current);
     recordChunksRef.current = [];
     if (audio.length === 0) return;
+    // Retain the take for playback BEFORE transcribing: transcription can
+    // take seconds (or fail outright), and the audio shouldn't be lost
+    // either way. encodeWav copies the samples, so the later
+    // transcribeInWorker() call — which transfers segment buffers to the
+    // worker, detaching them — can't corrupt what we hand to <audio>.
+    setRetainedRecording(URL.createObjectURL(encodeWav(audio, SAMPLE_RATE)));
     setTranscribing(true);
     try {
       const segs = segmentSpeech(audio, SAMPLE_RATE);
@@ -284,7 +316,7 @@ export function useAudioTranscription(): UseAudioTranscription {
     } finally {
       setTranscribing(false);
     }
-  }, [clearElapsedTimer, transcribeInWorker, appendText]);
+  }, [clearElapsedTimer, transcribeInWorker, appendText, setRetainedRecording]);
 
   const setMode = useCallback(
     (m: TranscribeMode) => {
@@ -327,7 +359,12 @@ export function useAudioTranscription(): UseAudioTranscription {
     [loadModel],
   );
 
-  const reset = useCallback(() => setTranscript(""), []);
+  // "Clear" wipes the take alongside the transcript — they're one artifact
+  // from the user's point of view.
+  const reset = useCallback(() => {
+    setTranscript("");
+    setRetainedRecording(null);
+  }, [setRetainedRecording]);
 
   const pushFrame = useCallback((frame: DecodedAudioFrame) => {
     // Agent guarantees 16 kHz mono; ignore anything else rather than mis-rate it.
@@ -341,11 +378,15 @@ export function useAudioTranscription(): UseAudioTranscription {
     }
   }, []);
 
-  // Terminate the worker + timers on unmount.
+  // Terminate the worker + timers on unmount, and release the retained take's
+  // object URL (read from the ref, so this effect stays mount-scoped rather
+  // than re-running — and thus revoking a live URL — on every new take).
   useEffect(() => {
     return () => {
       stopLiveLoop();
       clearElapsedTimer();
+      if (recordingUrlRef.current) URL.revokeObjectURL(recordingUrlRef.current);
+      recordingUrlRef.current = null;
       workerRef.current?.terminate();
       workerRef.current = null;
     };
@@ -371,6 +412,7 @@ export function useAudioTranscription(): UseAudioTranscription {
     elapsedMs,
     startRecording,
     pauseRecording,
+    recordingUrl,
     pushFrame,
   };
 }
