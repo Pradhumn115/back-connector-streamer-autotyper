@@ -408,21 +408,24 @@ export function App() {
                 and per-utterance latency (see lastLatencyMs in the hint below)
                 without restarting the session. Switching re-triggers a load
                 only the first time a given model is picked. */}
-            <div className="seg seg-sm">
-              <button
-                className={audioTx.model === "whisper" ? "active" : ""}
-                onClick={() => audioTx.setModel("whisper")}
-                title="onnx-community/whisper-base.en"
-              >
-                Whisper
-              </button>
-              <button
-                className={audioTx.model === "moonshine" ? "active" : ""}
-                onClick={() => audioTx.setModel("moonshine")}
-                title="onnx-community/moonshine-base-ONNX"
-              >
-                Moonshine
-              </button>
+            <div className="model-picker">
+              <span className="model-picker-label">Model</span>
+              <div className="seg seg-sm">
+                <button
+                  className={audioTx.model === "whisper" ? "active" : ""}
+                  onClick={() => audioTx.setModel("whisper")}
+                  title="onnx-community/whisper-base.en"
+                >
+                  Whisper
+                </button>
+                <button
+                  className={audioTx.model === "moonshine" ? "active" : ""}
+                  onClick={() => audioTx.setModel("moonshine")}
+                  title="onnx-community/moonshine-base-ONNX"
+                >
+                  Moonshine
+                </button>
+              </div>
             </div>
 
             {audioTx.mode === "live" ? (

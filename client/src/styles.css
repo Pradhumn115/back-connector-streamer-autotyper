@@ -317,6 +317,21 @@ body::after {
   font-size: 10.5px;
 }
 
+.model-picker {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 10px 0;
+}
+.model-picker-label {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
 /* Record-mode control row */
 .record-row {
   display: flex;
