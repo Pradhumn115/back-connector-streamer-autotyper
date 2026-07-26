@@ -404,6 +404,27 @@ export function App() {
               </div>
             </div>
 
+            {/* Model picker: lets you A/B the two STT models' output quality
+                and per-utterance latency (see lastLatencyMs in the hint below)
+                without restarting the session. Switching re-triggers a load
+                only the first time a given model is picked. */}
+            <div className="seg seg-sm">
+              <button
+                className={audioTx.model === "whisper" ? "active" : ""}
+                onClick={() => audioTx.setModel("whisper")}
+                title="onnx-community/whisper-base.en"
+              >
+                Whisper
+              </button>
+              <button
+                className={audioTx.model === "moonshine" ? "active" : ""}
+                onClick={() => audioTx.setModel("moonshine")}
+                title="onnx-community/moonshine-base-ONNX"
+              >
+                Moonshine
+              </button>
+            </div>
+
             {audioTx.mode === "live" ? (
               <label className="switch">
                 <input
@@ -442,7 +463,7 @@ export function App() {
                       : audioTx.mode === "record"
                         ? "Record a take, then Pause to transcribe the whole thing."
                         : audioTx.status === "ready"
-                          ? `Live captions${audioTx.device ? ` · ${audioTx.device}` : ""} — speech only, silence skipped.`
+                          ? `Live captions${audioTx.device ? ` · ${audioTx.device}` : ""}${audioTx.lastLatencyMs !== null ? ` · last ${audioTx.lastLatencyMs}ms` : ""} — speech only, silence skipped.`
                           : "Transcribes whatever's playing on the agent to text, in your browser."}
             </p>
 

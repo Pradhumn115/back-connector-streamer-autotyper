@@ -2,9 +2,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { DecodedAudioFrame } from "@bcsa/shared";
 import { pcmS16ToFloat32 } from "./pcm";
 import { segmentSpeech, concatFloat32, tailRms } from "./vad";
+import type { ModelKey } from "./transcriberWorker";
 
 export type ModelStatus = "idle" | "loading" | "ready" | "error";
 export type TranscribeMode = "live" | "record";
+export type { ModelKey };
 
 const SAMPLE_RATE = 16000;
 const LIVE_TICK_MS = 1200; // how often the live loop inspects the buffer
@@ -12,7 +14,7 @@ const LIVE_MIN_SAMPLES = 1.0 * SAMPLE_RATE; // wait for ≥1s before processing
 const LIVE_MAX_SAMPLES = 20 * SAMPLE_RATE; // force-flush cap (~20s)
 const LIVE_TAIL_SAMPLES = 0.4 * SAMPLE_RATE; // trailing window checked for a pause
 const LIVE_SILENCE_RMS = 0.008; // tail RMS below this = the speaker paused
-const RECORD_CHUNK_S = 30; // Whisper long-form chunking for record takes
+const RECORD_CHUNK_S = 30; // long-form chunking for record takes (models that support it)
 
 export interface UseAudioTranscription {
   status: ModelStatus;
@@ -23,6 +25,11 @@ export interface UseAudioTranscription {
   reset: () => void;
   mode: TranscribeMode;
   setMode: (m: TranscribeMode) => void;
+  // model selection (for comparing STT models' quality/latency)
+  model: ModelKey;
+  setModel: (m: ModelKey) => void;
+  /** Wall-clock ms the most recent transcribe() call took inside the worker. */
+  lastLatencyMs: number | null;
   // live
   liveActive: boolean;
   startLive: () => void;
@@ -38,14 +45,19 @@ export interface UseAudioTranscription {
 }
 
 /**
- * Owns the Whisper worker and Silero VAD, and turns the agent's audio into text
- * two ways:
+ * Owns the transcription worker and Silero VAD, and turns the agent's audio
+ * into text two ways:
  *  - **Live:** VAD-gated streaming — buffer PCM, and when the speaker pauses
  *    (trailing near-silence), transcribe the trimmed speech as one utterance.
- *    Silence never reaches Whisper, so no "you" hallucinations or window repeats.
+ *    Silence never reaches the model, so no "you" hallucinations or window repeats.
  *  - **Record:** buffer everything while recording; on pause, VAD-segment the
  *    whole take and transcribe it (long-form) into the transcript.
  * All gating uses refs so `pushFrame` keeps a stable identity.
+ *
+ * The worker can hold multiple STT models loaded at once (see
+ * transcriberWorker.ts's MODEL_CONFIGS); `model`/`setModel` let the UI switch
+ * between them to compare output quality and per-utterance latency
+ * (`lastLatencyMs`) without restarting the whole pipeline.
  */
 export function useAudioTranscription(): UseAudioTranscription {
   const [status, setStatus] = useState<ModelStatus>("idle");
@@ -54,20 +66,26 @@ export function useAudioTranscription(): UseAudioTranscription {
   const [error, setError] = useState<string | null>(null);
   const [transcript, setTranscript] = useState("");
   const [mode, setModeState] = useState<TranscribeMode>("live");
+  const [model, setModelState] = useState<ModelKey>("whisper");
+  const [lastLatencyMs, setLastLatencyMs] = useState<number | null>(null);
   const [liveActive, setLiveActive] = useState(false);
   const [recording, setRecording] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
   const [elapsedMs, setElapsedMs] = useState(0);
 
   const workerRef = useRef<Worker | null>(null);
-  const readyRef = useRef(false);
-  const readyWaitersRef = useRef<Array<() => void>>([]);
+  // Models the worker has confirmed as loaded/ready; switching to one of
+  // these is instant (no reload), switching to a new one shows "loading".
+  const readyModelsRef = useRef(new Set<ModelKey>());
+  const deviceByModelRef = useRef(new Map<ModelKey, string>());
+  const readyWaitersRef = useRef(new Map<ModelKey, Array<() => void>>());
   const reqSeqRef = useRef(0);
   const pendingRef = useRef(
     new Map<number, { resolve: (t: string) => void; reject: (e: Error) => void }>(),
   );
 
   const modeRef = useRef<TranscribeMode>("live");
+  const modelRef = useRef<ModelKey>("whisper");
   const liveActiveRef = useRef(false);
   const recordingRef = useRef(false);
   const liveBusyRef = useRef(false);
@@ -90,15 +108,21 @@ export function useAudioTranscription(): UseAudioTranscription {
       const m = e.data;
       switch (m?.type) {
         case "progress":
-          setProgress(Math.round(m.progress));
+          if (m.model === modelRef.current) setProgress(Math.round(m.progress));
           break;
-        case "ready":
-          readyRef.current = true;
-          setDevice(m.device ?? null);
-          setStatus("ready");
-          readyWaitersRef.current.splice(0).forEach((r) => r());
+        case "ready": {
+          const readyModel = m.model as ModelKey;
+          readyModelsRef.current.add(readyModel);
+          deviceByModelRef.current.set(readyModel, m.device ?? null);
+          if (readyModel === modelRef.current) {
+            setDevice(m.device ?? null);
+            setStatus("ready");
+          }
+          readyWaitersRef.current.get(readyModel)?.splice(0).forEach((r) => r());
           break;
+        }
         case "result": {
+          if (typeof m.latencyMs === "number") setLastLatencyMs(Math.round(m.latencyMs));
           const p = pendingRef.current.get(m.id);
           if (p) {
             pendingRef.current.delete(m.id);
@@ -118,7 +142,7 @@ export function useAudioTranscription(): UseAudioTranscription {
             // fail fast instead of hanging.
             setError(m.error);
             setStatus("error");
-            readyWaitersRef.current.splice(0).forEach((r) => r());
+            readyWaitersRef.current.get(modelRef.current)?.splice(0).forEach((r) => r());
           }
           break;
       }
@@ -127,27 +151,35 @@ export function useAudioTranscription(): UseAudioTranscription {
     return w;
   }, []);
 
-  const loadModel = useCallback(() => {
-    setError(null);
-    const w = ensureWorker();
-    if (!readyRef.current) setStatus("loading");
-    w.postMessage({ type: "load" });
-  }, [ensureWorker]);
+  const loadModel = useCallback(
+    (m: ModelKey = modelRef.current) => {
+      setError(null);
+      const w = ensureWorker();
+      if (!readyModelsRef.current.has(m)) setStatus("loading");
+      w.postMessage({ type: "load", model: m });
+    },
+    [ensureWorker],
+  );
 
-  const awaitReady = useCallback((): Promise<void> => {
-    if (readyRef.current) return Promise.resolve();
-    return new Promise((resolve) => readyWaitersRef.current.push(resolve));
+  const awaitReady = useCallback((m: ModelKey): Promise<void> => {
+    if (readyModelsRef.current.has(m)) return Promise.resolve();
+    return new Promise((resolve) => {
+      const waiters = readyWaitersRef.current.get(m) ?? [];
+      waiters.push(resolve);
+      readyWaitersRef.current.set(m, waiters);
+    });
   }, []);
 
   const transcribeInWorker = useCallback(
     async (audio: Float32Array, chunkLengthS?: number): Promise<string> => {
-      await awaitReady();
-      if (!readyRef.current) throw new Error("speech model not ready");
+      const m = modelRef.current;
+      await awaitReady(m);
+      if (!readyModelsRef.current.has(m)) throw new Error("speech model not ready");
       const w = ensureWorker();
       const id = ++reqSeqRef.current;
       return new Promise<string>((resolve, reject) => {
         pendingRef.current.set(id, { resolve, reject });
-        w.postMessage({ type: "transcribe", id, audio, chunkLengthS }, [audio.buffer]);
+        w.postMessage({ type: "transcribe", id, audio, model: m, chunkLengthS }, [audio.buffer]);
       });
     },
     [awaitReady, ensureWorker],
@@ -160,7 +192,7 @@ export function useAudioTranscription(): UseAudioTranscription {
 
   // ---- live loop ----
   const runLiveTick = useCallback(async () => {
-    if (liveBusyRef.current || !liveActiveRef.current || !readyRef.current) return;
+    if (liveBusyRef.current || !liveActiveRef.current || !readyModelsRef.current.has(modelRef.current)) return;
     if (liveLenRef.current < LIVE_MIN_SAMPLES) return;
     liveBusyRef.current = true;
     try {
@@ -272,6 +304,29 @@ export function useAudioTranscription(): UseAudioTranscription {
     [stopLiveLoop, clearElapsedTimer],
   );
 
+  const setModel = useCallback(
+    (m: ModelKey) => {
+      if (m === modelRef.current) return;
+      modelRef.current = m;
+      setModelState(m);
+      setLastLatencyMs(null);
+      if (readyModelsRef.current.has(m)) {
+        setDevice(deviceByModelRef.current.get(m) ?? null);
+        setStatus("ready");
+        setProgress(0);
+      } else {
+        setDevice(null);
+        setProgress(0);
+        setStatus("idle");
+        // Actively transcribing already (live or recording): don't wait for
+        // the next startLive()/startRecording() call to kick off the load,
+        // or captions would silently stall until the user re-toggles.
+        if (liveActiveRef.current || recordingRef.current) loadModel(m);
+      }
+    },
+    [loadModel],
+  );
+
   const reset = useCallback(() => setTranscript(""), []);
 
   const pushFrame = useCallback((frame: DecodedAudioFrame) => {
@@ -305,6 +360,9 @@ export function useAudioTranscription(): UseAudioTranscription {
     reset,
     mode,
     setMode,
+    model,
+    setModel,
+    lastLatencyMs,
     liveActive,
     startLive,
     stopLive,
