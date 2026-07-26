@@ -41,10 +41,12 @@ export function App() {
 
   const refreshHz = conn.agentInfo?.refreshHz;
 
-  // On (re)connect, tell the agent the current mode so streaming starts.
+  // On (re)connect, tell the agent the current mode so streaming starts, and
+  // auto-run diagnostics once so the panel is populated without a manual press.
   useEffect(() => {
     if (connected) {
       conn.send({ type: "setMode", mode, intervalMs: intervalForMode(mode, refreshHz) });
+      conn.runDiagnostics();
     }
     // Only fire on transition into connected; mode changes are handled by
     // onSetMode which sends its own setMode.

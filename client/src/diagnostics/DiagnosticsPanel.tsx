@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { DiagnosticCheck, DiagnosticStatus } from "@bcsa/shared";
 import type { DiagnosticsState } from "../connect/useConnection";
 
@@ -28,6 +29,7 @@ export function DiagnosticsPanel({
   onRun,
   onReconnect,
 }: DiagnosticsPanelProps) {
+  const [copied, setCopied] = useState(false);
   const hasWebGPU = typeof navigator !== "undefined" && "gpu" in navigator;
 
   const browserChecks: Row[] = [
@@ -65,17 +67,44 @@ export function DiagnosticsPanel({
 
   const agentRows: Row[] = diagnostics.checks;
 
+  const copyReport = () => {
+    const line = (r: Row) =>
+      `[${r.status.toUpperCase()}] ${r.label} — ${r.detail}${r.fix ? `\n    fix: ${r.fix}` : ""}`;
+    const report = [
+      "Back·Connector diagnostics",
+      new Date().toISOString(),
+      "",
+      "This browser:",
+      ...browserChecks.map(line),
+      "",
+      agentRows.length ? "Agent:" : "Agent: (not run)",
+      ...agentRows.map(line),
+    ].join("\n");
+    void navigator.clipboard?.writeText(report).then(
+      () => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+      },
+      () => {},
+    );
+  };
+
   return (
     <div className="card">
       <div className="card-head">
         <span className="card-title">Diagnostics</span>
-        <button
-          className="btn-mini"
-          onClick={onRun}
-          disabled={!connected || diagnostics.running}
-        >
-          {diagnostics.running ? "Checking…" : "Run checks"}
-        </button>
+        <div className="diag-actions">
+          <button className="btn-mini" onClick={copyReport}>
+            {copied ? "Copied ✓" : "Copy"}
+          </button>
+          <button
+            className="btn-mini"
+            onClick={onRun}
+            disabled={!connected || diagnostics.running}
+          >
+            {diagnostics.running ? "Checking…" : "Run checks"}
+          </button>
+        </div>
       </div>
 
       <div className="diag-group-label">This browser</div>

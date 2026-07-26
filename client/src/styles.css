@@ -808,3 +808,4 @@ input[type="range"]::-moz-range-thumb {
   color: var(--amber);
 }
 .diag-action { margin-top: 6px; }
+.diag-actions { display: flex; gap: 6px; }
