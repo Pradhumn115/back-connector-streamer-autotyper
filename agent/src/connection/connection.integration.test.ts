@@ -62,6 +62,13 @@ function fakeInputLock(): InputLockManager {
   });
 }
 
+function fakeWebrtcFfmpegArgs(): { video: (port: number) => string[]; audio: (port: number) => string[] } {
+  return {
+    video: () => ["-f", "lavfi", "-i", "nullsrc", "-t", "0.1", "-f", "null", "-"],
+    audio: () => ["-f", "lavfi", "-i", "anullsrc", "-t", "0.1", "-f", "null", "-"],
+  };
+}
+
 async function startServer(secret: string, recorded: string[]) {
   const server = new ConnectionServer({
     secret,
@@ -75,6 +82,7 @@ async function startServer(secret: string, recorded: string[]) {
     inputLock: fakeInputLock(),
     audio: new AudioCapture(null), // no loopback device -> supported:false, no ffmpeg
     refreshHz: 60,
+    webrtcFfmpegArgs: fakeWebrtcFfmpegArgs(),
   });
   await server.listen();
   return server;
@@ -153,6 +161,37 @@ test("rejects an invalid secret", async () => {
     assert.equal(result.ok, false);
     assert.equal(result.reason, "invalid secret");
   }
+  await server.close();
+});
+
+test("startWebrtc stops Classic capture and reports webrtcState", async () => {
+  const server = await startServer("s3cret", []);
+  const port = server.boundPort();
+
+  const ws = new WebSocket(`wss://127.0.0.1:${port}`, { rejectUnauthorized: false });
+  await once(ws, "open");
+
+  const infoPromise = nextMessage(ws, "agentInfo");
+  ws.send(encodeMessage({ type: "auth", secret: "s3cret" }));
+  await infoPromise;
+
+  const offerPromise = nextMessage(ws, "webrtcOffer");
+  ws.send(encodeMessage({ type: "startWebrtc" }));
+  const offerMsg = await offerPromise;
+  assert.equal(offerMsg.type, "webrtcOffer");
+  if (offerMsg.type === "webrtcOffer") {
+    assert.ok(offerMsg.sdp.startsWith("v=0"));
+  }
+
+  const statePromise = nextMessage(ws, "webrtcState");
+  ws.send(encodeMessage({ type: "stopWebrtc" }));
+  const stateMsg = await statePromise;
+  assert.equal(stateMsg.type, "webrtcState");
+  if (stateMsg.type === "webrtcState") {
+    assert.equal(stateMsg.active, false);
+  }
+
+  ws.close();
   await server.close();
 });
 

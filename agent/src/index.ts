@@ -3,13 +3,13 @@ import { loadOrCreateTls } from "./tls.js";
 import { localAddresses } from "./net.js";
 import { isElevated } from "./inputlock/elevation.js";
 import { CaptureLoop, createScreenshotCapture, type ScreenCapture } from "./capture/index.js";
-import { FfmpegCapture, ffmpegAvailable } from "./capture/ffmpeg.js";
+import { FfmpegCapture, ffmpegAvailable, screenCaptureInputArgs } from "./capture/ffmpeg.js";
 import { detectRefreshHz } from "./display.js";
 import { InputController } from "./input/index.js";
 import { createNutBackend } from "./input/nutBackend.js";
 import { createNutTypingBackend } from "./autotyper/nutTyping.js";
 import { ConnectionServer } from "./connection/index.js";
-import { AudioCapture } from "./audio/index.js";
+import { AudioCapture, detectLoopbackDevice } from "./audio/index.js";
 import { InputLockManager } from "./inputlock/index.js";
 import { createInputLockBackend } from "./inputlock/backends.js";
 import { registerLockHotkey } from "./inputlock/hotkey.js";
@@ -39,6 +39,41 @@ async function main(): Promise<void> {
     captureKind = "screenshot-desktop (install ffmpeg for higher fps)";
   }
 
+  // WebRTC ffmpeg args: same per-OS screen-capture input as FfmpegCapture and
+  // the same loopback-device detection as AudioCapture (see capture/ffmpeg.ts
+  // and audio/detect.ts) — only the output tail differs (RTP + libx264/libopus
+  // instead of MJPEG-over-pipe/raw-PCM-over-pipe).
+  const WEBRTC_VIDEO_FPS = 30;
+  const loopback = detectLoopbackDevice();
+  const webrtcFfmpegArgs = {
+    video: (port: number) => [
+      ...screenCaptureInputArgs(WEBRTC_VIDEO_FPS),
+      "-loglevel", "error",
+      "-c:v", "libx264",
+      "-profile:v", "baseline",
+      "-level", "3.1",
+      "-preset", "ultrafast",
+      "-tune", "zerolatency",
+      "-f", "rtp",
+      `rtp://127.0.0.1:${port}`,
+    ],
+    audio: (port: number) => [
+      ...(loopback
+        ? ["-f", loopback.format, "-i", loopback.device]
+        // No loopback device detected: feed silence rather than failing the
+        // whole WebRTC session over a missing audio source (mirrors
+        // AudioCapture's "unsupported" honesty for Classic mode, but the
+        // WebRTC audio track just carries silence instead of not existing).
+        : ["-f", "lavfi", "-i", "anullsrc=channel_layout=mono:sample_rate=48000"]),
+      "-loglevel", "error",
+      "-ac", "1",
+      "-ar", "48000",
+      "-c:a", "libopus",
+      "-f", "rtp",
+      `rtp://127.0.0.1:${port}`,
+    ],
+  };
+
   // `server` is referenced by the lock manager's onChange (declared before it
   // exists), so use a holder the arrow can read once it's assigned.
   let server: ConnectionServer;
@@ -59,6 +94,7 @@ async function main(): Promise<void> {
     inputLock,
     audio,
     refreshHz,
+    webrtcFfmpegArgs,
   });
 
   await server.listen();
