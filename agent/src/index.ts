@@ -23,7 +23,12 @@ async function main(): Promise<void> {
 
   const input = new InputController(await createNutBackend());
   const typingBackend = await createNutTypingBackend();
-  const audio = new AudioCapture();
+  // Detect the loopback device once and share it between AudioCapture (Classic
+  // audio) and the WebRTC audio args below — detectLoopbackDevice() spawns
+  // ffmpeg synchronously to enumerate devices, so running it twice at startup
+  // is wasted work.
+  const loopback = detectLoopbackDevice();
+  const audio = new AudioCapture(loopback);
 
   // Prefer the continuous ffmpeg pipeline (can sustain ~30fps); fall back to the
   // per-frame screenshot loop (a few fps) when ffmpeg isn't installed.
@@ -44,11 +49,20 @@ async function main(): Promise<void> {
   // and audio/detect.ts) — only the output tail differs (RTP + libx264/libopus
   // instead of MJPEG-over-pipe/raw-PCM-over-pipe).
   const WEBRTC_VIDEO_FPS = 30;
-  const loopback = detectLoopbackDevice();
   const webrtcFfmpegArgs = {
     video: (port: number) => [
-      ...screenCaptureInputArgs(WEBRTC_VIDEO_FPS),
+      "-hide_banner",
       "-loglevel", "error",
+      ...screenCaptureInputArgs(WEBRTC_VIDEO_FPS),
+      // Screen-capture inputs deliver packed RGB/422 formats (gdigrab->bgra,
+      // x11grab->bgr0, avfoundation->uyvy422). Without an explicit pix_fmt,
+      // ffmpeg's automatic negotiation picks yuv444p/yuv422p, neither of
+      // which is legal under `-profile:v baseline`, so libx264 fails to init.
+      "-pix_fmt", "yuv420p",
+      // Screen-capture inputs (especially avfoundation) ignore -framerate and
+      // emit as fast as possible (see capture/ffmpeg.ts); -vf fps=... is what
+      // actually caps the output rate, mirroring Classic capture's use of it.
+      "-vf", `fps=${WEBRTC_VIDEO_FPS}`,
       "-c:v", "libx264",
       "-profile:v", "baseline",
       "-level", "3.1",
@@ -58,17 +72,23 @@ async function main(): Promise<void> {
       `rtp://127.0.0.1:${port}`,
     ],
     audio: (port: number) => [
+      "-hide_banner",
+      "-loglevel", "error",
       ...(loopback
         ? ["-f", loopback.format, "-i", loopback.device]
-        // No loopback device detected: feed silence rather than failing the
-        // whole WebRTC session over a missing audio source (mirrors
-        // AudioCapture's "unsupported" honesty for Classic mode, but the
+        // No loopback device detected: feed throttled silence rather than
+        // failing the whole WebRTC session over a missing audio source
+        // (mirrors AudioCapture's "unsupported" honesty for Classic mode —
+        // handleStartWebrtc separately reports this via agentError — but the
         // WebRTC audio track just carries silence instead of not existing).
-        : ["-f", "lavfi", "-i", "anullsrc=channel_layout=mono:sample_rate=48000"]),
-      "-loglevel", "error",
+        // -re paces the lavfi source at wall-clock rate; without it ffmpeg
+        // would generate/encode silence as fast as possible, since neither
+        // lavfi nor the rtp muxer throttle on their own.
+        : ["-re", "-f", "lavfi", "-i", "anullsrc=channel_layout=mono:sample_rate=48000"]),
       "-ac", "1",
       "-ar", "48000",
       "-c:a", "libopus",
+      "-payload_type", "111",
       "-f", "rtp",
       `rtp://127.0.0.1:${port}`,
     ],

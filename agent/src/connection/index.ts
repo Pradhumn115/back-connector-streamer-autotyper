@@ -277,7 +277,7 @@ export class ConnectionServer {
           this.handleStopWebrtc(ws);
           break;
         case "webrtcAnswer":
-          await this.handleWebrtcAnswer(msg.sdp);
+          await this.handleWebrtcAnswer(ws, msg.sdp);
           break;
         case "auth":
           break; // already authenticated; ignore duplicate
@@ -388,27 +388,49 @@ export class ConnectionServer {
    * offer, and send it to the client. Idempotent if already active.
    */
   private async handleStartWebrtc(ws: WebSocket): Promise<void> {
-    if (this.webrtc) return; // already active; idempotent
+    if (this.webrtc) {
+      // Already active; idempotent, but still answer so a client that double-
+      // sent startWebrtc (e.g. a retry) doesn't wait forever for a response.
+      this.send(ws, { type: "webrtcState", active: true });
+      return;
+    }
+    // Same "unsupported" honesty as handleSetAudio's Classic-mode path: don't
+    // silently substitute the anullsrc fallback without telling the client.
+    // The session still starts (silence beats failing the whole session), but
+    // the client learns the audio track carries no real signal.
+    if (!this.deps.audio.supported) {
+      this.send(ws, {
+        type: "agentError",
+        message:
+          "WebRTC audio unavailable: no loopback device (install BlackHole/VB-Cable, see README); video will stream with silent audio",
+      });
+    }
     this.deps.capture.stop();
     this.deps.audio.stop();
-    this.webrtc = new WebrtcSession({
+    const session: WebrtcSession = new WebrtcSession({
       videoFfmpegArgs: this.deps.webrtcFfmpegArgs.video,
       audioFfmpegArgs: this.deps.webrtcFfmpegArgs.audio,
       onStateChange: (active, error) => {
+        // Guard against a stale session's callback firing after it was
+        // replaced/dropped and a newer session (`this.webrtc`) took over.
+        if (this.webrtc !== session) return;
         this.send(ws, { type: "webrtcState", active, error });
         if (!active) {
-          this.webrtc?.close();
+          session.close();
           this.webrtc = null;
         }
       },
     });
+    this.webrtc = session;
     try {
-      const sdp = await this.webrtc.createOffer();
+      const sdp = await session.createOffer();
       this.send(ws, { type: "webrtcOffer", sdp });
     } catch (err) {
       this.send(ws, { type: "webrtcState", active: false, error: String(err) });
-      this.webrtc?.close();
-      this.webrtc = null;
+      if (this.webrtc === session) {
+        session.close();
+        this.webrtc = null;
+      }
     }
   }
 
@@ -419,14 +441,26 @@ export class ConnectionServer {
    * of silently tearing the session down with no client-visible confirmation.
    */
   private handleStopWebrtc(ws: WebSocket): void {
-    if (!this.webrtc) return;
+    if (!this.webrtc) {
+      // No active session; still answer so a client that double-sent
+      // stopWebrtc (or raced a stop with a server-side teardown) sees the
+      // authoritative state instead of waiting forever.
+      this.send(ws, { type: "webrtcState", active: false });
+      return;
+    }
     this.webrtc.close();
     this.webrtc = null;
     this.send(ws, { type: "webrtcState", active: false });
   }
 
-  private async handleWebrtcAnswer(sdp: string): Promise<void> {
-    if (!this.webrtc) return;
+  private async handleWebrtcAnswer(ws: WebSocket, sdp: string): Promise<void> {
+    if (!this.webrtc) {
+      this.send(ws, {
+        type: "agentError",
+        message: "webrtcAnswer received with no active WebRTC session",
+      });
+      return;
+    }
     try {
       await this.webrtc.setAnswer(sdp);
     } catch {
