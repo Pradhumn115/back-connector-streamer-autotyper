@@ -134,7 +134,17 @@ export class WebrtcSession {
       this.reportFailure(err);
       throw new Error(err);
     }
-    this.videoRelay = new RtpRelay("video", (port) => this.deps.videoFfmpegArgsFor(tier, port));
+    // The video encoder dying is reported as a session failure: without it
+    // the peer connection stays happily "connected" while the client renders
+    // a permanently blank <video>, with nothing anywhere saying why. The
+    // audio relay deliberately gets no such handler (silent audio is an
+    // accepted degraded mode; a blank screen is not) -- see RtpRelay's
+    // onFatal docs.
+    this.videoRelay = new RtpRelay(
+      "video",
+      (port) => this.deps.videoFfmpegArgsFor(tier, port),
+      (reason) => this.reportFailure(`WebRTC ${reason}`),
+    );
     await this.videoRelay.start(this.videoTrack);
 
     await this.awaitConnected();

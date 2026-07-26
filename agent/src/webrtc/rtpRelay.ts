@@ -9,6 +9,20 @@ import { RtpPacket, type MediaStreamTrack } from "werift";
  * relay just stops forwarding until stop()/start() is called again — mirrors
  * FfmpegCapture/AudioCapture's "no hot-loop respawn" behavior.
  */
+/**
+ * How much of ffmpeg's stderr to retain for the failure message. ffmpeg runs
+ * at `-loglevel warning`/`error` on both relays, so it normally prints
+ * nothing; this cap only guards against a pathological loop growing the
+ * buffer without bound.
+ */
+const STDERR_TAIL_LIMIT = 4000;
+
+/** Last non-empty line of a captured stderr blob, for a one-line summary. */
+function lastLine(text: string): string {
+  const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+  return lines[lines.length - 1] ?? "";
+}
+
 export class RtpRelay {
   private proc: ChildProcess | null = null;
   private socket: Socket | null = null;
@@ -19,6 +33,17 @@ export class RtpRelay {
     private readonly kind: "video" | "audio",
     /** Builds the full ffmpeg args given the chosen local RTP port. */
     private readonly buildArgs: (port: number) => string[],
+    /**
+     * Called when ffmpeg dies on its own (non-zero exit) while still the
+     * current process, with a one-line reason. Omit for tracks whose loss
+     * shouldn't tear the session down: the audio relay deliberately has no
+     * handler, because this project's design is "video streams with silent
+     * audio" when audio is unavailable (see connection/index.ts's
+     * handleStartWebrtc), whereas a dead *video* encoder means a
+     * permanently blank screen and must surface as a real error rather than
+     * a session that reports itself connected forever.
+     */
+    private readonly onFatal?: (reason: string) => void,
   ) {}
 
   async start(track: MediaStreamTrack): Promise<void> {
@@ -43,15 +68,40 @@ export class RtpRelay {
     socket.bind(port, "127.0.0.1");
     this.socket = socket;
 
-    const proc = spawn("ffmpeg", this.buildArgs(port), { stdio: ["ignore", "ignore", "ignore"] });
+    // stderr is piped, not ignored: at -loglevel warning/error ffmpeg only
+    // speaks up when something is actually wrong, and discarding it meant a
+    // failed encoder (bad codec params, unavailable capture device, odd
+    // frame dimensions) reported nothing but a bare exit code -- leaving a
+    // WebRTC session that claims to be connected while streaming no video.
+    const proc = spawn("ffmpeg", this.buildArgs(port), { stdio: ["ignore", "ignore", "pipe"] });
     this.proc = proc;
+    let stderrTail = "";
+    proc.stderr?.setEncoding("utf8");
+    proc.stderr?.on("data", (chunk: string) => {
+      stderrTail = (stderrTail + chunk).slice(-STDERR_TAIL_LIMIT);
+      process.stderr.write(`[webrtc:${this.kind}] ffmpeg: ${chunk}`);
+    });
     proc.on("error", (err) => {
       process.stderr.write(`[webrtc:${this.kind}] ffmpeg spawn error: ${String(err)}\n`);
     });
     proc.on("exit", (code) => {
-      if (this.proc === proc) this.proc = null;
+      // Capture identity *before* clearing: stop() sets this.proc to null and
+      // SIGKILLs (exit code null), and a restart replaces it — neither is a
+      // failure, so only a still-current process exiting non-zero reports.
+      const wasCurrent = this.proc === proc;
+      if (wasCurrent) this.proc = null;
       if (code !== null && code !== 0) {
-        process.stderr.write(`[webrtc:${this.kind}] ffmpeg exited with code ${code}\n`);
+        const detail = stderrTail.trim();
+        process.stderr.write(
+          `[webrtc:${this.kind}] ffmpeg exited with code ${code}` +
+            (detail ? `:\n${detail}\n` : "\n"),
+        );
+        if (wasCurrent) {
+          const summary = lastLine(detail);
+          this.onFatal?.(
+            `${this.kind} encoder failed (ffmpeg exit ${code})${summary ? `: ${summary}` : ""}`,
+          );
+        }
       }
     });
   }

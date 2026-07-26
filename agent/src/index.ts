@@ -10,6 +10,7 @@ import { createNutBackend } from "./input/nutBackend.js";
 import { createNutTypingBackend } from "./autotyper/nutTyping.js";
 import { ConnectionServer } from "./connection/index.js";
 import type { VideoCodecTier } from "./webrtc/codecs.js";
+import { buildVideoFilter } from "./webrtc/videoFilter.js";
 import { AudioCapture, detectLoopbackDevice } from "./audio/index.js";
 import { InputLockManager } from "./inputlock/index.js";
 import { createInputLockBackend } from "./inputlock/backends.js";
@@ -81,17 +82,9 @@ async function main(): Promise<void> {
       // ffmpeg's automatic negotiation picks yuv444p/yuv422p, neither of
       // which isn't legal for the H.264 profile below, so libx264 fails to init.
       "-pix_fmt", "yuv420p",
-      // Screen-capture inputs (especially avfoundation) ignore -framerate and
-      // emit as fast as possible (see capture/ffmpeg.ts); -vf fps=... is what
-      // actually caps the output rate, mirroring Classic capture's use of
-      // it. scale=... only applies when the tier declares a maxWidth (the
-      // baseline/3.1 tier needs it to stay inside its macroblock budget;
-      // the high/5.2 tier runs uncapped at native resolution) — mirrors
-      // Classic capture's own `maxWidth` pattern in capture/ffmpeg.ts.
-      "-vf",
-      tier.maxWidth
-        ? `fps=${tier.maxFps},scale='min(${tier.maxWidth},iw)':-2`
-        : `fps=${tier.maxFps}`,
+      // Caps fps and guarantees even output dimensions — see buildVideoFilter
+      // for why both matter (libx264/yuv420p rejects odd sizes outright).
+      "-vf", buildVideoFilter(tier),
       "-c:v", "libx264",
       // Must stay in sync with the profile-level-id byte pair of this
       // tier's codec in webrtc/codecs.ts (e.g. profile 0x64 = High, level
