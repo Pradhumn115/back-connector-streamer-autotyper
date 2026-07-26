@@ -19,6 +19,7 @@
     "@nut-tree-fork/nut-js": "^4.2.6",
     "screenshot-desktop": "^1.15.4",
     "selfsigned": "^2.4.1",
+    "werift": "^0.24.1",
     "ws": "^8.18.0"
   },
   "optionalDependencies": {
