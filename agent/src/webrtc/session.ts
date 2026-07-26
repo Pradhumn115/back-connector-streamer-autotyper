@@ -28,6 +28,12 @@ export interface WebrtcSessionDeps {
   audioFfmpegArgs: (port: number) => string[];
   /** Called whenever the session's active/error state changes. */
   onStateChange: (active: boolean, error?: string) => void;
+  /**
+   * Overrides the 5s ICE-connect timeout. Test-only escape hatch so the
+   * timeout-rejects path can be exercised without waiting the full 5s in
+   * the production default; omit in real usage.
+   */
+  iceConnectTimeoutMs?: number;
 }
 
 /**
@@ -44,8 +50,10 @@ export class WebrtcSession {
   private closed = false;
   /** Set once awaitConnected() has already reported a failure, so close() doesn't double-report. */
   private failed = false;
+  private readonly iceConnectTimeoutMs: number;
 
   constructor(private readonly deps: WebrtcSessionDeps) {
+    this.iceConnectTimeoutMs = deps.iceConnectTimeoutMs ?? ICE_CONNECT_TIMEOUT_MS;
     this.pc = new RTCPeerConnection({
       codecs: { video: [VIDEO_CODEC], audio: [AUDIO_CODEC] },
     });
@@ -85,6 +93,11 @@ export class WebrtcSession {
   async setAnswer(sdp: string): Promise<void> {
     await this.pc.setRemoteDescription({ type: "answer", sdp });
     await this.awaitConnected();
+    // A successful connect means any earlier failure latch (e.g. a
+    // transient "disconnected" blip before the first "connected") no
+    // longer describes the session's current state. Clear it so a real
+    // failure later in the session's life can still reach onStateChange.
+    this.failed = false;
     this.deps.onStateChange(true);
   }
 
@@ -98,7 +111,8 @@ export class WebrtcSession {
   /**
    * Resolves once `connectionStateChange` reports "connected"; rejects (and
    * fires onStateChange(false, err) exactly once) on "failed"/"closed" or a
-   * 5s timeout. No silent fallback: a session that never connects is a hard
+   * timeout (5s in production, overridable via `deps.iceConnectTimeoutMs`
+   * for tests). No silent fallback: a session that never connects is a hard
    * error, not a fallback to Classic mode here.
    *
    * werift's `Event.subscribe()` does NOT return a bare unsubscribe function
@@ -114,14 +128,26 @@ export class WebrtcSession {
    */
   private awaitConnected(): Promise<void> {
     if (this.pc.connectionState === "connected") return Promise.resolve();
+    // Already dead (e.g. a prior "failed"/"closed" event landed before
+    // setAnswer() was even called): fail fast instead of waiting out the
+    // full timeout for a state change that will never arrive.
+    if (this.pc.connectionState === "failed" || this.pc.connectionState === "closed") {
+      return Promise.reject(new Error(`WebRTC connection ${this.pc.connectionState}`));
+    }
     return new Promise((resolve, reject) => {
+      // Declared before both the timer and the subscription (rather than
+      // destructured inline in the timer callback) so there's no temporal-
+      // dead-zone hazard: `unSubscribe` is assigned synchronously below,
+      // before either callback can possibly run, but keeping the
+      // declaration order explicit avoids relying on that timing.
+      let unSubscribe: () => void;
       const timer = setTimeout(() => {
         unSubscribe();
-        const err = "ICE did not connect within 5s";
+        const err = `ICE did not connect within ${this.iceConnectTimeoutMs}ms`;
         this.reportFailure(err);
         reject(new Error(err));
-      }, ICE_CONNECT_TIMEOUT_MS);
-      const { unSubscribe } = this.pc.connectionStateChange.subscribe((state) => {
+      }, this.iceConnectTimeoutMs);
+      ({ unSubscribe } = this.pc.connectionStateChange.subscribe((state) => {
         if (state === "connected") {
           clearTimeout(timer);
           unSubscribe();
@@ -131,7 +157,7 @@ export class WebrtcSession {
           unSubscribe();
           reject(new Error(`WebRTC connection ${state}`));
         }
-      });
+      }));
     });
   }
 
