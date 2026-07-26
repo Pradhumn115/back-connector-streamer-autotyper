@@ -48,6 +48,52 @@ test("createOffer/setAnswer establishes a connection and relays RTP", async (t) 
   assert.equal(states.at(-1)?.active, true);
 });
 
+/**
+ * Regression test for the "connected but permanently blank <video>" bug.
+ *
+ * werift's RTCRtpSender.sendRtp() silently discards every packet while
+ * `dtlsTransport.state !== "connected"`. ffmpeg emits its only early IDR
+ * within the first frames of spawning, so starting the video relay before
+ * awaiting the connection raced the encoder against the DTLS handshake and
+ * routinely dropped the keyframe the browser needed -- on every OS pairing,
+ * since nothing about the race is platform-specific.
+ *
+ * The observable invariant is therefore ordering: the video encoder must not
+ * be constructed at all until the connection is up. This asserts it via the
+ * ICE-timeout path, where the connection never completes and so
+ * videoFfmpegArgsFor must never be called.
+ */
+test("video encoder does not start until the transport is connected", async (t) => {
+  let videoArgsCalls = 0;
+  const session = new WebrtcSession({
+    videoFfmpegArgsFor: () => {
+      videoArgsCalls++;
+      return ["-f", "lavfi", "-i", "nullsrc", "-f", "null", "-"];
+    },
+    audioFfmpegArgs: () => ["-f", "lavfi", "-i", "anullsrc", "-f", "null", "-"],
+    onStateChange: () => {},
+    iceConnectTimeoutMs: 200,
+  });
+  t.after(() => session.close());
+
+  const offerSdp = await session.createOffer();
+  const unreachableAnswer = offerSdp
+    .replace(/a=setup:actpass/g, "a=setup:active")
+    .replace(/a=ice-ufrag:\S+/g, "a=ice-ufrag:deadbeef")
+    .replace(/a=ice-pwd:\S+/g, "a=ice-pwd:deadbeefdeadbeefdeadbeef")
+    .replace(/(a=candidate:\S+ \d+ udp \d+ )\S+/g, "$1198.51.100.9")
+    .replace(/a=sendonly/g, "a=recvonly");
+
+  await assert.rejects(() => session.setAnswer(unreachableAnswer), /ICE did not connect within/);
+
+  assert.equal(
+    videoArgsCalls,
+    0,
+    "video encoder must not spawn before the transport is connected — " +
+      "packets sent pre-DTLS are silently dropped by werift, including the keyframe",
+  );
+});
+
 test("setAnswer rejects on ICE-connect timeout and reports failure exactly once", async (t) => {
   const states: Array<{ active: boolean; error?: string }> = [];
   const session = new WebrtcSession({

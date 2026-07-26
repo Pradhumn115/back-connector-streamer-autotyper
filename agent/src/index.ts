@@ -93,6 +93,41 @@ async function main(): Promise<void> {
       "-level", tier.ffmpegLevel,
       "-preset", "ultrafast",
       "-tune", "zerolatency",
+      // Bounded GOP -- one IDR per second of output.
+      //
+      // `-tune zerolatency` leaves the keyframe interval effectively
+      // unbounded: measured directly, these exact args without `-g` produce
+      // ONE I-frame for the whole stream (150 frames encoded -> `frame I:1
+      // frame P:149`), so the only recovery point a receiver ever gets is
+      // the very first frame. Any loss of that frame -- or of any packet
+      // afterwards -- leaves the browser decoding P-frames against a
+      // reference it does not have, forever. That is a permanently black
+      // <video> on a peer connection that reports itself connected.
+      //
+      // A receiver's remedy for exactly this is a PLI ("send me a
+      // keyframe"), which werift surfaces as
+      // `sender.onPictureLossIndication`. ffmpeg has no way to be asked for
+      // an IDR on demand mid-run, so a bounded GOP is what actually answers
+      // those PLIs: recovery is capped at one second instead of never.
+      "-g", String(tier.maxFps),
+      // See VideoCodecTier.maxBitrateKbps -- an uncapped CRF encode bursts
+      // far past what the link can carry, and nothing here reacts to
+      // congestion. bufsize is half the rate cap to keep the rate-control
+      // window short, which suits low latency.
+      "-b:v", `${tier.maxBitrateKbps}k`,
+      "-maxrate", `${tier.maxBitrateKbps}k`,
+      "-bufsize", `${Math.round(tier.maxBitrateKbps / 2)}k`,
+      // Cap the RTP payload well under a 1500-byte path MTU.
+      //
+      // ffmpeg's rtp muxer defaults to 1472-byte UDP payloads (measured:
+      // 1472 without this flag, 1200 with it). werift then SRTP-encrypts
+      // each one, appending an auth tag, and the UDP+IP headers add 28 more
+      // -- so the default puts ~1510 bytes on the wire, over standard
+      // Ethernet's 1500 MTU and far over Tailscale's 1280. The result is IP
+      // fragmentation or outright drops on precisely the links this tool is
+      // meant to run over, and with the pre-fix single-keyframe stream above,
+      // one dropped fragment killed the session permanently.
+      "-pkt_size", "1200",
       "-f", "rtp",
       `rtp://127.0.0.1:${port}`,
     ],

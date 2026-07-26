@@ -7,6 +7,9 @@ type Transceiver = ReturnType<RTCPeerConnection["addTransceiver"]>;
 
 const ICE_CONNECT_TIMEOUT_MS = 5000;
 
+/** Minimum gap between PLI log lines; see reportPictureLoss(). */
+const PLI_LOG_THROTTLE_MS = 2000;
+
 /**
  * Strips server-reflexive ("typ srflx") candidate lines from an SDP.
  *
@@ -74,6 +77,7 @@ export class WebrtcSession {
     this.videoTransceiver = this.pc.addTransceiver(this.videoTrack, { direction: "sendonly" });
     this.pc.addTransceiver(this.audioTrack, { direction: "sendonly" });
     this.suppressStun();
+    this.reportPictureLoss();
     this.audioRelay = new RtpRelay("audio", deps.audioFfmpegArgs);
 
     // Long-lived watcher: reports a drop that happens *after* the initial
@@ -134,6 +138,35 @@ export class WebrtcSession {
       this.reportFailure(err);
       throw new Error(err);
     }
+    // The video encoder MUST NOT start before the transport is connected.
+    //
+    // werift's RTCRtpSender.sendRtp() opens with
+    //   `if (this.dtlsTransport.state !== "connected" || !this.codec) return;`
+    // -- every packet handed to it before the DTLS handshake completes is
+    // silently discarded, with no error and no buffering. ffmpeg, meanwhile,
+    // emits its one and only IDR within the first few frames of spawning
+    // (see index.ts's `-g` comment for why there used to be exactly one).
+    // Starting the relay first therefore raced ffmpeg's process spawn +
+    // capture-device open against the DTLS handshake, and whenever DTLS lost
+    // that race the sole keyframe was dropped on the floor. The browser then
+    // held a run of P-frames referencing a reference frame it never received:
+    // a permanently blank <video> on a session reporting itself connected,
+    // reproducing on every agent/client OS pairing because nothing about it
+    // is platform-specific.
+    //
+    // awaitConnected() resolving genuinely implies DTLS is up, not merely
+    // ICE: werift only calls setConnectionState("connected") after
+    // `await dtlsTransport.start()` has resolved for every transport
+    // (peerConnection.js). So gating the relay on it closes the race
+    // outright rather than narrowing it.
+    await this.awaitConnected();
+    // A successful connect means any earlier failure latch (e.g. a
+    // transient "disconnected" blip before the first "connected") no
+    // longer describes the session's current state. Clear it so a real
+    // failure later in the session's life can still reach onStateChange --
+    // including one raised by the relay we are about to start.
+    this.failed = false;
+
     // Replacing the relay must stop the old one first. setAnswer() can run
     // more than once for a session (a duplicate/retried webrtcAnswer, or a
     // renegotiation), and a bare reassignment orphaned the previous
@@ -157,12 +190,6 @@ export class WebrtcSession {
     );
     await this.videoRelay.start(this.videoTrack);
 
-    await this.awaitConnected();
-    // A successful connect means any earlier failure latch (e.g. a
-    // transient "disconnected" blip before the first "connected") no
-    // longer describes the session's current state. Clear it so a real
-    // failure later in the session's life can still reach onStateChange.
-    this.failed = false;
     this.deps.onStateChange(true);
   }
 
@@ -223,6 +250,40 @@ export class WebrtcSession {
           reject(new Error(`WebRTC connection ${state}`));
         }
       }));
+    });
+  }
+
+  /**
+   * Logs the browser's keyframe requests (PLI), throttled.
+   *
+   * A PLI means the receiver cannot decode: it is missing the reference
+   * frame everything since has been predicted from, and is asking for a
+   * fresh IDR. This is the single most diagnostic signal this transport
+   * produces, and it was previously thrown away -- werift raises it on the
+   * sender, nothing subscribed, so the one symptom that would have named
+   * the "connected but blank" bug immediately was invisible in the logs.
+   *
+   * This deliberately does not try to force a keyframe in response: ffmpeg
+   * cannot be asked for an IDR on demand mid-run, and restarting it per PLI
+   * would turn a PLI storm into a capture-restart storm. The bounded `-g` in
+   * index.ts is what answers these (recovery within one second); this is
+   * purely so a recurring failure is attributable rather than silent.
+   *
+   * Throttled because PLIs arrive in bursts -- one per lost keyframe per
+   * receiver -- and an unthrottled write would itself become a problem.
+   */
+  private reportPictureLoss(): void {
+    let count = 0;
+    let lastLoggedAt = 0;
+    this.videoTransceiver.sender.onPictureLossIndication.subscribe(() => {
+      count++;
+      const now = Date.now();
+      if (now - lastLoggedAt < PLI_LOG_THROTTLE_MS) return;
+      lastLoggedAt = now;
+      process.stderr.write(
+        `[webrtc:video] client requested a keyframe (PLI x${count}) -- ` +
+          `it cannot decode until the next IDR (<=1s at the configured GOP)\n`,
+      );
     });
   }
 

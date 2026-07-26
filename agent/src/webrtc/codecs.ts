@@ -33,6 +33,25 @@ export interface VideoCodecTier {
   maxWidth: number | null;
   /** fps cap for this tier's ffmpeg encode. */
   maxFps: number;
+  /**
+   * Bitrate ceiling for this tier's encode, in kbit/s, applied as
+   * `-b:v`/`-maxrate` with a half-size `-bufsize`.
+   *
+   * Not cosmetic: without an explicit rate cap libx264 encodes at its
+   * default CRF, which on a native-resolution desktop at high fps produces
+   * bursts of tens of Mbit/s. Nothing in this pipeline reacts to congestion
+   * -- the `goog-remb` feedback advertised in the rtcpFeedback lists below
+   * is negotiated but never read, and ffmpeg has no back-channel from the
+   * peer connection -- so an uncapped encoder simply overruns whatever the
+   * link can carry. The resulting packet loss is invisible on a LAN and
+   * fatal over Tailscale/Cloudflare, which is exactly the "connected but no
+   * picture" asymmetry this transport kept exhibiting.
+   *
+   * These are deliberately conservative: screen content is highly
+   * compressible (large flat regions, few full-frame changes), so the cap is
+   * only reached during heavy motion such as video playback or scrolling.
+   */
+  maxBitrateKbps: number;
 }
 
 /**
@@ -58,6 +77,7 @@ export const VIDEO_CODEC_HIGH: VideoCodecTier = {
   ffmpegLevel: "5.2",
   maxWidth: null,
   maxFps: 60,
+  maxBitrateKbps: 8000,
 };
 
 /**
@@ -91,6 +111,7 @@ export const VIDEO_CODEC_BASELINE: VideoCodecTier = {
   ffmpegLevel: "3.1",
   maxWidth: 1280,
   maxFps: 30,
+  maxBitrateKbps: 2500,
 };
 
 /**
