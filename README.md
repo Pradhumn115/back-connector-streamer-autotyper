@@ -115,10 +115,12 @@ npm run build        # builds shared, agent, client
 package manager the OS has (Homebrew on macOS; winget/choco/scoop on Windows;
 apt/dnf/pacman on Linux):
 
-- **ffmpeg** — enables high-fps screen capture. Without it the agent falls back
-  to a slow per-frame path (a few fps). **On Windows this is the fix for low
-  video fps.** After it installs on Windows, open a NEW terminal so PATH updates,
-  then `npm run agent`.
+- **ffmpeg** — enables high-fps screen capture **and the WebRTC transport** (its
+  H.264/Opus RTP relays). Without it the agent falls back to a slow per-frame
+  path (a few fps) and WebRTC is unavailable. **On Windows this is the fix for
+  low video fps.** After it installs on Windows, open a NEW terminal so PATH
+  updates, then `npm run agent`. (WebRTC's `werift` needs no system install — it
+  comes with `npm install`.)
 - **cloudflared** — optional, only needed for `npm run tunnel` (remote access
   without a VPN).
 
@@ -353,3 +355,13 @@ client: it uses a real peer connection with H.264 video + Opus audio (agent side
 via `werift` + ffmpeg RTP), so it adapts bitrate and stays low-latency over
 constrained links. On any WebRTC failure the client falls back to Classic and
 shows the error rather than freezing.
+
+### WebRTC troubleshooting
+
+| Symptom | Cause & fix |
+|---|---|
+| **Toggle flips back to Classic** | WebRTC couldn't establish — the client never fails silently. Check the error hint, then the rows below. |
+| **Agent diagnostics: "WebRTC unavailable"** | The RTP relay needs **ffmpeg** on the agent. Run `npm run setup` and restart the agent. |
+| **"Browser WebRTC" warns in diagnostics** | Your browser lacks `RTCPeerConnection`. Use a modern browser; Classic mode still works. |
+| **Black video after switching** | Codec negotiation or the peer connection failed to complete. It should auto-revert to Classic; if not, toggle back and retry. Very restrictive networks can block the peer connection (STUN/ICE) — use Classic there. |
+| **Video works, no audio (or vice-versa)** | One track's codec (H.264 / Opus) didn't negotiate. Retry the toggle; check the agent log for a codec-negotiation error. |

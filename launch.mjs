@@ -64,7 +64,7 @@ function printStatus() {
   console.log(color("bold", "\n  Back·Connector\n"));
   console.log(`  ${mark(deps)} dependencies installed`);
   console.log(`  ${mark(built)} packages built ${built ? "" : color("dim", "(needed before agent/client)")}`);
-  console.log(`  ${mark(ffmpeg)} ffmpeg ${ffmpeg ? "" : color("dim", "(needed for high-fps video)")}`);
+  console.log(`  ${mark(ffmpeg)} ffmpeg ${ffmpeg ? "" : color("dim", "(needed for high-fps video + WebRTC)")}`);
   console.log(`  ${mark(cloudflared)} cloudflared ${cloudflared ? "" : color("dim", "(optional — for tunnel)")}`);
   return { deps, built };
 }

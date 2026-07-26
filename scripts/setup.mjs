@@ -1,7 +1,7 @@
 // One-command setup: installs the optional prerequisites the agent uses, via
 // whatever package manager the OS already has.
 //
-//   ffmpeg      -> high-fps screen capture (without it, video mode is a few fps)
+//   ffmpeg      -> high-fps screen capture + the WebRTC transport (without it, video is a few fps and WebRTC is off)
 //   cloudflared -> optional Cloudflare Tunnel for remote access (npm run tunnel)
 //
 // Also builds the macOS input-lock helper. Safe to re-run; it skips anything
@@ -89,7 +89,7 @@ function ensure(tool, { required }) {
     console.log(`✓ ${tool} already installed`);
     return true;
   }
-  console.log(`• ${tool} not found — ${required ? "required for high fps" : "optional"}`);
+  console.log(`• ${tool} not found — ${required ? "required for high-fps video + WebRTC" : "optional"}`);
   const pm = detectPkgManager();
   const spec = pm && INSTALL[pm]?.[tool];
   if (!spec) {

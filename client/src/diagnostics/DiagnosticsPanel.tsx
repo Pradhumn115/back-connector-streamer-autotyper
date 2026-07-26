@@ -31,6 +31,7 @@ export function DiagnosticsPanel({
 }: DiagnosticsPanelProps) {
   const [copied, setCopied] = useState(false);
   const hasWebGPU = typeof navigator !== "undefined" && "gpu" in navigator;
+  const hasWebRTC = typeof window !== "undefined" && "RTCPeerConnection" in window;
 
   const browserChecks: Row[] = [
     connected
@@ -62,6 +63,15 @@ export function DiagnosticsPanel({
           status: "warn",
           detail: "WebGPU not available — transcription uses the slower WASM path",
           fix: "Use Chrome or Edge 113+ for GPU-accelerated transcription.",
+        },
+    hasWebRTC
+      ? { id: "webrtc", label: "Browser WebRTC", status: "ok", detail: "supported" }
+      : {
+          id: "webrtc",
+          label: "Browser WebRTC",
+          status: "warn",
+          detail: "RTCPeerConnection unavailable — the WebRTC transport won't work here",
+          fix: "Use a modern browser (Chrome/Edge/Firefox/Safari); Classic mode still works.",
         },
   ];
 

@@ -56,6 +56,23 @@ export function runDiagnostics(ctx: DiagContext): DiagnosticCheck[] {
   });
 
   checks.push(
+    hasFfmpeg
+      ? {
+          id: "webrtc",
+          label: "WebRTC transport (H.264 + Opus)",
+          status: "ok",
+          detail: "ready (werift + ffmpeg RTP)",
+        }
+      : {
+          id: "webrtc",
+          label: "WebRTC transport (H.264 + Opus)",
+          status: "warn",
+          detail: "unavailable — the RTP relay needs ffmpeg (Classic mode still works)",
+          fix: "Install ffmpeg (`npm run setup`) to enable the WebRTC transport.",
+        },
+  );
+
+  checks.push(
     ctx.screenSize
       ? {
           id: "screen-access",
