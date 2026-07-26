@@ -53,28 +53,22 @@ async function main(): Promise<void> {
   // client-side intervalForMode()/MAX_FPS in ScreenView.tsx: clamp
   // Math.round(refreshHz) to [1, MAX_WEBRTC_FPS].
   //
-  // MAX_WEBRTC_FPS is intentionally NOT 120 (Classic's MAX_FPS): unlike
-  // FfmpegCapture (which scales its output to `maxWidth` before encoding),
-  // this WebRTC pipeline captures and encodes at the display's *native*
-  // resolution (no `-vf scale`). H.264 level 4.0 (see the -level flag below
-  // and webrtc/codecs.ts) has a fixed macroblock-rate budget of 245,760
-  // MB/s. For the real device this code was tested against (1728x1117,
-  // called out in the -level comment below), that's 108x70 = 7,560
-  // macroblocks/frame, so the level-4.0 ceiling is only ~32.5fps at that
-  // resolution — and for larger/4K-class native resolutions the safe fps is
-  // far lower still (e.g. ~1080p is already only good for ~30fps; ~1440p
-  // for ~17fps). Raising this cap to Classic's 120 (or even 60) would
-  // silently exceed level 4.0's budget on exactly the resolutions this app
-  // targets, reproducing the silent libx264 hang that motivated switching
-  // from level 3.1 to 4.0 in the first place (see below). 30 is the largest
-  // ceiling verified safe at the tested real capture resolution, so it's
-  // kept as the cap; only the *lower* bound now truly varies with the
-  // display's refresh rate (e.g. a sub-30Hz display now correctly targets
-  // its own rate instead of blindly encoding at a fixed 30fps). Unlocking a
-  // higher genuine ceiling would require either bumping past level 4.0
-  // (more decoder-compat risk) or scaling WebRTC's capture resolution down
-  // like FfmpegCapture already does — both out of scope here.
-  const MAX_WEBRTC_FPS = 30;
+  // MAX_WEBRTC_FPS now matches Classic's MAX_FPS (120). This WebRTC pipeline
+  // captures and encodes at the display's *native* resolution (no `-vf
+  // scale`, unlike FfmpegCapture which scales to `maxWidth`), so the H.264
+  // level's macroblock-rate budget has to cover native-resolution encoding
+  // at up to 120fps. Level 4.0 (245,760 MB/s MaxMBPS) topped out at ~32.5fps
+  // for a 1728x1117 capture (108x70 = 7,560 macroblocks/frame) — nowhere
+  // close to 120fps. Level 5.1 (see the -level flag below and
+  // webrtc/codecs.ts) raises MaxMBPS to 983,040 MB/s, i.e. ~130fps at that
+  // same resolution, comfortably covering 120fps with margin, and its
+  // 36,864 MB MaxFS is far above the 7,560 MB/frame needed. This was
+  // verified empirically, not just from the level-limits arithmetic: the
+  // exact ffmpeg command below (avfoundation capture, libx264 baseline,
+  // -level 5.1, -vf fps=120) was run against a throwaway local UDP listener
+  // and produced real RTP packet flow at 120fps — see the task11 fix report
+  // for the packet counts observed.
+  const MAX_WEBRTC_FPS = 120;
   const WEBRTC_VIDEO_FPS = Math.min(MAX_WEBRTC_FPS, Math.max(1, Math.round(refreshHz)));
   const webrtcFfmpegArgs = {
     video: (port: number) => [
@@ -93,11 +87,15 @@ async function main(): Promise<void> {
       "-c:v", "libx264",
       "-profile:v", "baseline",
       // Must stay in sync with the profile-level-id level byte in
-      // webrtc/codecs.ts's VIDEO_CODEC (0x28 = level 4.0). Level 3.1 was
+      // webrtc/codecs.ts's VIDEO_CODEC (0x33 = level 5.1). Level 3.1 was
       // tried first but its macroblock-rate limit can't sustain real screen
       // capture resolutions (e.g. 1728x1117@30fps) — libx264 silently hangs
-      // instead of erroring, so it never emits RTP output. See codecs.ts.
-      "-level", "4.0",
+      // instead of erroring, so it never emits RTP output. Level 4.0 fixed
+      // that for 30fps but its budget can't reach a 120Hz display's real
+      // refresh rate at native capture resolution. Level 5.1 was empirically
+      // verified (not just computed) to sustain 120fps at 1728x1117 — see
+      // codecs.ts and the task11 fix report.
+      "-level", "5.1",
       "-preset", "ultrafast",
       "-tune", "zerolatency",
       "-f", "rtp",
