@@ -309,7 +309,16 @@ export class ConnectionServer {
         return;
       }
 
-      const buf = encodeFrame(this.seq++, Date.now(), image.format, image.data);
+      // `keyframe` matters only for H.264, where a delta frame is undecodable
+      // without the keyframe it references. Intra-only formats (JPEG/PNG) leave
+      // it undefined and default to true, since every such frame stands alone.
+      const buf = encodeFrame(
+        this.seq++,
+        Date.now(),
+        image.format,
+        image.data,
+        image.keyframe ?? true,
+      );
       ws.send(buf, { binary: true });
     });
   }

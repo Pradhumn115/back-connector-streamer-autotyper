@@ -17,6 +17,7 @@
   "dependencies": {
     "@bcsa/shared": "*",
     "@nut-tree-fork/nut-js": "^4.2.6",
+    "node-av": "^6.1.1",
     "screenshot-desktop": "^1.15.4",
     "selfsigned": "^2.4.1",
     "werift": "^0.24.1",

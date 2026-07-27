@@ -77,6 +77,13 @@ export interface AudioStatus {
 export interface UseConnectionOptions {
   /** Called for every decoded audio frame (16 kHz mono PCM) from the agent. */
   onAudioFrame?: (frame: DecodedAudioFrame) => void;
+  /**
+   * Receives H.264 frames, which cannot be rendered as images and must go to a
+   * WebCodecs decoder. Separate from the JPEG/PNG path because that path keeps
+   * only the newest frame — correct for self-contained images, and corrupting
+   * for a codec whose delta frames reference earlier ones.
+   */
+  onVideoFrame?: (frame: DecodedFrame) => void;
   /** Called when the agent sends a WebRTC SDP offer. */
   onWebrtcOffer?: (sdp: string) => void;
   /** Called when the agent reports a change in WebRTC session state. */
@@ -147,7 +154,15 @@ function saveParams(p: ConnectParams): void {
   }
 }
 
-const mimeForFormat: Record<FrameFormat, string> = {
+/**
+ * MIME type for the image formats that can be rendered as a Blob URL.
+ *
+ * H.264 is deliberately absent: it is not a self-contained image and cannot be
+ * handed to an <img>. Those frames go to a WebCodecs VideoDecoder instead, so
+ * the map is `Partial` and callers must handle the missing case rather than
+ * silently mislabelling a video frame as an image.
+ */
+const mimeForFormat: Partial<Record<FrameFormat, string>> = {
   [FrameFormat.JPEG]: "image/jpeg",
   [FrameFormat.PNG]: "image/png",
 };
@@ -208,6 +223,8 @@ export function useConnection(opts: UseConnectionOptions = {}): UseConnection {
   // latest one without needing to re-open the connection.
   const onAudioFrameRef = useRef(opts.onAudioFrame);
   onAudioFrameRef.current = opts.onAudioFrame;
+  const onVideoFrameRef = useRef(opts.onVideoFrame);
+  onVideoFrameRef.current = opts.onVideoFrame;
   const onWebrtcOfferRef = useRef(opts.onWebrtcOffer);
   onWebrtcOfferRef.current = opts.onWebrtcOffer;
   const onWebrtcStateRef = useRef(opts.onWebrtcState);
@@ -347,6 +364,15 @@ export function useConnection(opts: UseConnectionOptions = {}): UseConnection {
 
   const handleFrame = useCallback(
     (decoded: DecodedFrame) => {
+      // H.264 frames are not images and cannot become a Blob URL — they go to
+      // the WebCodecs decoder instead, which the view owns. Routed here rather
+      // than in the view so the drop-stale policy below applies only to the
+      // intra-only formats it is correct for: dropping an H.264 delta frame
+      // would corrupt the stream until the next keyframe.
+      if (decoded.format === FrameFormat.H264) {
+        onVideoFrameRef.current?.(decoded);
+        return;
+      }
       // Drop-stale policy: build a URL for the newest frame and revoke the
       // previous one immediately. Only the latest frame is ever kept.
       const blob = new Blob([decoded.payload as BlobPart], {

@@ -11,6 +11,7 @@ import { createNutTypingBackend } from "./autotyper/nutTyping.js";
 import { ConnectionServer } from "./connection/index.js";
 import type { VideoCodecTier } from "./webrtc/codecs.js";
 import { buildVideoFilter } from "./webrtc/videoFilter.js";
+import { H264Capture } from "./capture/h264.js";
 import { AudioCapture, detectLoopbackDevice } from "./audio/index.js";
 import { InputLockManager } from "./inputlock/index.js";
 import { createInputLockBackend } from "./inputlock/backends.js";
@@ -38,7 +39,17 @@ async function main(): Promise<void> {
   const refreshHz = detectRefreshHz();
   let capture: ScreenCapture;
   let captureKind: string;
-  if (ffmpegAvailable()) {
+  // Opt-in H.264 video path (BCSA_H264=1).
+  //
+  // Same transport and same frame envelope as Classic — only the codec differs.
+  // Measured on a real desktop: ~7.4KB/frame (~1.8 Mbit/s) against MJPEG's
+  // ~267KB/frame (~63 Mbit/s), because H.264 sends only what changed while
+  // every JPEG is intra-coded. Opt-in while it beds in; Classic remains the
+  // default and the fallback for browsers without WebCodecs.
+  if (process.env.BCSA_H264) {
+    capture = new H264Capture({ width: maxWidth, fps: Math.min(30, refreshHz) });
+    captureKind = `h264 in-process (max width ${maxWidth}px)`;
+  } else if (ffmpegAvailable()) {
     capture = new FfmpegCapture({ maxWidth });
     captureKind = `ffmpeg (targets display refresh ~${refreshHz}fps, max width ${maxWidth}px)`;
   } else {

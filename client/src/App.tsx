@@ -6,6 +6,7 @@ import { useRemoteControl } from "./control/useRemoteControl";
 import { useWebrtcConnection } from "./webrtc/useWebrtcConnection";
 import { tapWebrtcAudioForTranscription } from "./webrtc/webrtcAudioTap";
 import { ScreenView, intervalForMode, type ContentRect } from "./view/ScreenView";
+import { useH264Decoder } from "./view/useH264Decoder";
 import { AutotypePanel } from "./autotype-panel/AutotypePanel";
 import { DiagnosticsPanel } from "./diagnostics/DiagnosticsPanel";
 
@@ -29,13 +30,20 @@ export function App() {
   // conn isn't defined yet at the point onWebrtcOffer is declared, so we can't
   // close over conn.sendWebrtcAnswer directly.
   const [pendingOfferSdp, setPendingOfferSdp] = useState<string | null>(null);
+  // Declared before useConnection because the H.264 decoder needs the canvas
+  // and useConnection needs the decoder's pushFrame.
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  // H.264 frames bypass the image path entirely and go to a WebCodecs decoder
+  // that paints straight onto the Classic canvas — same surface, same click
+  // mapping, so remote control needs no special case for it.
+  const h264 = useH264Decoder(canvasRef);
   const conn = useConnection({
     onAudioFrame: audioTx.pushFrame,
+    onVideoFrame: h264.pushFrame,
     onWebrtcOffer: (sdp) => setPendingOfferSdp(sdp),
     onWebrtcState: webrtc.handleAgentState,
   });
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const videoRef = useRef<HTMLVideoElement>(null);
   // The letterbox rectangle the frame occupies inside the canvas, shared between
   // the view (which computes it) and the control layer (which maps clicks with it).
   const contentRectRef = useRef<ContentRect>({ dx: 0, dy: 0, dw: 0, dh: 0 });

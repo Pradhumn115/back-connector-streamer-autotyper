@@ -5,8 +5,8 @@
  *   offset 0 : uint32  magic   = 0x42435346 ("BCSF")
  *   offset 4 : uint32  seq     (monotonic frame sequence number)
  *   offset 8 : float64 timestamp (ms since epoch on the agent)
- *   offset 16: uint8   format  (0 = JPEG, 1 = PNG)
- *   offset 17: uint8   reserved (0)
+ *   offset 16: uint8   format  (0 = JPEG, 1 = PNG, 2 = H264)
+ *   offset 17: uint8   flags   (bit 0 = keyframe; meaningful for H264 only)
  *   offset 18: uint16  reserved (0)
  *   offset 20: ...      image payload bytes
  */
@@ -17,12 +17,27 @@ export const FRAME_HEADER_SIZE = 20;
 export enum FrameFormat {
   JPEG = 0,
   PNG = 1,
+  /**
+   * A single H.264 access unit in Annex-B form.
+   *
+   * Unlike JPEG/PNG, these frames are NOT independent: a delta frame is
+   * meaningless without the keyframe it references, which is why the envelope
+   * carries `keyframe` — the browser's WebCodecs VideoDecoder must be told
+   * which chunks are `key` and which are `delta`, and must discard everything
+   * until it has seen a key.
+   */
+  H264 = 2,
 }
+
+/** Frame is a keyframe (an IDR, for H264). */
+export const FRAME_FLAG_KEYFRAME = 0x01;
 
 export interface DecodedFrame {
   seq: number;
   timestamp: number;
   format: FrameFormat;
+  /** True for intra-coded frames. Always true for JPEG/PNG, which are self-contained. */
+  keyframe: boolean;
   payload: Uint8Array;
 }
 
@@ -32,6 +47,7 @@ export function encodeFrame(
   timestamp: number,
   format: FrameFormat,
   payload: Uint8Array,
+  keyframe = true,
 ): ArrayBuffer {
   const buf = new ArrayBuffer(FRAME_HEADER_SIZE + payload.byteLength);
   const view = new DataView(buf);
@@ -39,7 +55,7 @@ export function encodeFrame(
   view.setUint32(4, seq >>> 0, true);
   view.setFloat64(8, timestamp, true);
   view.setUint8(16, format);
-  view.setUint8(17, 0);
+  view.setUint8(17, keyframe ? FRAME_FLAG_KEYFRAME : 0);
   view.setUint16(18, 0, true);
   new Uint8Array(buf, FRAME_HEADER_SIZE).set(payload);
   return buf;
@@ -54,8 +70,9 @@ export function decodeFrame(data: ArrayBuffer | Uint8Array): DecodedFrame | null
   const seq = view.getUint32(4, true);
   const timestamp = view.getFloat64(8, true);
   const format = view.getUint8(16) as FrameFormat;
+  const keyframe = (view.getUint8(17) & FRAME_FLAG_KEYFRAME) !== 0;
   const payload = bytes.subarray(FRAME_HEADER_SIZE);
-  return { seq, timestamp, format, payload };
+  return { seq, timestamp, format, keyframe, payload };
 }
 
 /** True if a binary buffer looks like one of our frames (cheap magic check). */

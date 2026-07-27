@@ -3,6 +3,12 @@ import { FrameFormat } from "@bcsa/shared";
 export interface CapturedImage {
   data: Uint8Array;
   format: FrameFormat;
+  /**
+   * Whether this frame is independently decodable. JPEG/PNG always are; H.264
+   * delta frames are not, and a receiver must discard everything until it sees
+   * a keyframe. Defaults to true so the intra-only paths need not set it.
+   */
+  keyframe?: boolean;
 }
 
 /** Grabs a single screenshot. Injectable so the loop can be tested. */
