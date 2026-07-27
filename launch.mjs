@@ -6,7 +6,7 @@
 // Shows a menu: full setup, run the agent, run the client, run the tunnel,
 // rebuild, or a local agent+client test. Dependency-free and cross-platform.
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { platform } from "node:os";
 import { dirname, join } from "node:path";
@@ -33,6 +33,97 @@ function have(cmd, args = ["--version"]) {
   }
 }
 
+/**
+ * Newest modification time under a directory, or 0 if it doesn't exist.
+ *
+ * Used to compare sources against build output. `existsSync` alone cannot tell
+ * a current build from a stale one, and a stale build is the normal state after
+ * `git pull` — the directory is right there, just out of date.
+ */
+function newestMtime(dir, exts) {
+  let newest = 0;
+  const walk = (d) => {
+    let entries;
+    try {
+      entries = readdirSync(d, { withFileTypes: true });
+    } catch {
+      return; // unreadable or missing; treat as "nothing here"
+    }
+    for (const e of entries) {
+      if (e.name === "node_modules" || e.name.startsWith(".")) continue;
+      const full = join(d, e.name);
+      if (e.isDirectory()) walk(full);
+      else if (exts.some((x) => e.name.endsWith(x))) {
+        try {
+          newest = Math.max(newest, statSync(full).mtimeMs);
+        } catch {
+          // Raced with a delete; ignore.
+        }
+      }
+    }
+  };
+  walk(dir);
+  return newest;
+}
+
+/** Workspaces to check for missing dependencies. */
+const WORKSPACES = ["shared", "agent", "client"];
+
+/**
+ * True when `shared`'s sources are newer than its compiled output.
+ *
+ * Only `shared` is checked, because only `shared` is consumed as BUILD OUTPUT
+ * at runtime: its package.json points at `dist/`, and both the agent and the
+ * client import it that way. The agent itself runs from source via tsx, and the
+ * client is served from source by Vite in dev, so their `dist/` directories
+ * being stale changes nothing about what actually executes — flagging them
+ * would mean a rebuild after every source edit for no benefit.
+ *
+ * Getting this wrong is quiet rather than loud. A protocol change that is not
+ * rebuilt leaves new enum members `undefined`, so frames are labelled 0 (JPEG)
+ * instead of 2 (H264) and the client tries to render video as an image: a blank
+ * screen that looks like a rendering bug rather than a build problem.
+ */
+function buildIsStale() {
+  const src = join(ROOT, "shared", "src");
+  const dist = join(ROOT, "shared", "dist");
+  if (!existsSync(src)) return false;
+  if (!existsSync(dist)) return true;
+  return newestMtime(src, [".ts", ".tsx"]) > newestMtime(dist, [".js", ".d.ts"]);
+}
+
+/**
+ * Dependencies declared in a workspace but absent from node_modules.
+ *
+ * A pull that adds a dependency leaves node_modules present but incomplete, so
+ * an existence check on the directory passes while the import still fails at
+ * runtime with a bare "Cannot find module".
+ */
+function missingDependencies() {
+  const missing = [];
+  for (const pkg of ["", ...WORKSPACES]) {
+    const manifest = join(ROOT, pkg, "package.json");
+    if (!existsSync(manifest)) continue;
+    let deps;
+    try {
+      deps = JSON.parse(readFileSync(manifest, "utf8")).dependencies ?? {};
+    } catch {
+      continue;
+    }
+    for (const name of Object.keys(deps)) {
+      // Workspace siblings are symlinked by npm and may resolve from the root.
+      if (name.startsWith("@bcsa/")) continue;
+      if (
+        !existsSync(join(ROOT, "node_modules", name)) &&
+        !existsSync(join(ROOT, pkg, "node_modules", name))
+      ) {
+        missing.push(name);
+      }
+    }
+  }
+  return [...new Set(missing)];
+}
+
 /** Run a command inheriting the terminal. Ctrl-C stops the child, not the menu. */
 function run(cmd, args) {
   return new Promise((resolve) => {
@@ -56,14 +147,20 @@ const npm = (script) => run("npm", ["run", script]);
 
 /** One line per prerequisite so the user sees what's ready. */
 function printStatus() {
-  const deps = existsSync(join(ROOT, "node_modules"));
-  const built = existsSync(join(ROOT, "shared", "dist"));
+  const missing = missingDependencies();
+  const deps = existsSync(join(ROOT, "node_modules")) && missing.length === 0;
+  const built = existsSync(join(ROOT, "shared", "dist")) && !buildIsStale();
   const ffmpeg = have("ffmpeg", ["-version"]);
   const cloudflared = have("cloudflared");
   const mark = (ok) => (ok ? color("green", "✓") : color("red", "•"));
   console.log(color("bold", "\n  Back·Connector\n"));
-  console.log(`  ${mark(deps)} dependencies installed`);
-  console.log(`  ${mark(built)} packages built ${built ? "" : color("dim", "(needed before agent/client)")}`);
+  console.log(
+    `  ${mark(deps)} dependencies installed` +
+      (missing.length ? color("dim", ` (missing: ${missing.slice(0, 3).join(", ")})`) : ""),
+  );
+  console.log(
+    `  ${mark(built)} packages built ${built ? "" : color("dim", "(sources changed since last build)")}`,
+  );
   console.log(`  ${mark(ffmpeg)} ffmpeg ${ffmpeg ? "" : color("dim", "(needed for high-fps video + WebRTC)")}`);
   console.log(`  ${mark(cloudflared)} cloudflared ${cloudflared ? "" : color("dim", "(optional — for tunnel)")}`);
   return { deps, built };
@@ -81,13 +178,16 @@ async function fullSetup() {
  * runnable automatically. Skips entirely when everything is already in place.
  */
 async function autoBootstrap() {
-  const needInstall = !existsSync(join(ROOT, "node_modules"));
+  // Staleness, not mere existence. After a `git pull` every path below exists
+  // and is out of date, which is precisely when running stale code does the
+  // most damage and explains the least.
+  const needInstall = !existsSync(join(ROOT, "node_modules")) || missingDependencies().length > 0;
   const needFfmpeg = !have("ffmpeg", ["-version"]);
-  const needBuild = !existsSync(join(ROOT, "shared", "dist"));
+  const needBuild = buildIsStale();
 
   if (!needInstall && !needFfmpeg && !needBuild) return; // nothing to do
 
-  console.log(color("amber", "\n  Some prerequisites are missing — setting up automatically…"));
+  console.log(color("amber", "\n  Setting up automatically (dependencies or build are out of date)…"));
   if (needInstall) await run("npm", ["install"]);
   // ffmpeg missing ⇒ likely an unconfigured machine: run the full prerequisite
   // installer (ffmpeg + optional cloudflared/audio + macOS native helper).
