@@ -68,6 +68,14 @@ export interface InputLockStatus {
   supported: boolean;
 }
 
+/** The agent machine's own output volume, as last reported by the agent. */
+export interface OutputVolumeStatus {
+  supported: boolean;
+  /** 0..100. */
+  level: number;
+  muted: boolean;
+}
+
 export interface AudioStatus {
   /** Whether the agent has a system-audio loopback device available. */
   supported: boolean;
@@ -111,6 +119,9 @@ export interface UseConnection {
   autotype: AutotypeStatus;
   inputLock: InputLockStatus;
   audio: AudioStatus;
+  outputVolume: OutputVolumeStatus;
+  setOutputVolume: (level: number) => void;
+  setOutputMute: (muted: boolean) => void;
   diagnostics: DiagnosticsState;
   lastError: string | null;
   params: ConnectParams;
@@ -220,6 +231,11 @@ export function useConnection(opts: UseConnectionOptions = {}): UseConnection {
   const [connectedHost, setConnectedHost] = useState<string | null>(null);
   const [agentInfo, setAgentInfo] = useState<AgentInfo | null>(null);
   const [latestFrame, setLatestFrame] = useState<LatestFrame | null>(null);
+  const [outputVolume, setOutputVolumeState] = useState<OutputVolumeStatus>({
+    supported: false,
+    level: 0,
+    muted: false,
+  });
   const [audio, setAudioState] = useState<AudioStatus>({
     supported: false,
     enabled: false,
@@ -354,6 +370,16 @@ export function useConnection(opts: UseConnectionOptions = {}): UseConnection {
         break;
       case "audioState":
         setAudioState({ supported: msg.supported, enabled: msg.enabled });
+        break;
+      case "outputVolumeState":
+        // Always the agent's reading of its own machine, never an echo of what
+        // was requested — the OS clamps and quantises, and someone at the
+        // machine can turn the knob too.
+        setOutputVolumeState({
+          supported: msg.supported,
+          level: msg.level,
+          muted: msg.muted,
+        });
         break;
       case "diagnostics":
         setDiagnostics({ running: false, checks: msg.checks });
@@ -602,6 +628,22 @@ export function useConnection(opts: UseConnectionOptions = {}): UseConnection {
     }
   }, []);
 
+  const setOutputVolume = useCallback(
+    (level: number) => {
+      // No optimistic echo: the agent replies with what the machine actually
+      // ended up at, which the OS may have clamped or quantised.
+      send({ type: "setOutputVolume", level });
+    },
+    [send],
+  );
+
+  const setOutputMute = useCallback(
+    (muted: boolean) => {
+      send({ type: "setOutputMute", muted });
+    },
+    [send],
+  );
+
   const setAudio = useCallback(
     (enabled: boolean) => {
       // Optimistic local echo; the agent confirms with an audioState message.
@@ -647,6 +689,9 @@ export function useConnection(opts: UseConnectionOptions = {}): UseConnection {
     autotype,
     inputLock,
     audio,
+    outputVolume,
+    setOutputVolume,
+    setOutputMute,
     diagnostics,
     lastError,
     params,

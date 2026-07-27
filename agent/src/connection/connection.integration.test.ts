@@ -13,6 +13,7 @@ import {
 } from "@bcsa/shared";
 import { ConnectionServer } from "./index.js";
 import { AudioCapture } from "../audio/index.js";
+import { UnsupportedVolumeController } from "../audio/volume.js";
 import { CaptureLoop, type CapturedImage } from "../capture/index.js";
 import { InputController, type InputBackend } from "../input/index.js";
 import type { TypingBackend } from "../autotyper/index.js";
@@ -86,6 +87,9 @@ async function startServer(
     typingBackend: fakeTyping(),
     inputLock: fakeInputLock(),
     audio: new AudioCapture(null), // no loopback device -> supported:false, no ffmpeg
+    // A real controller would change the developer's actual speaker volume
+    // while the suite runs; the tests here are about the connection, not the OS.
+    volume: new UnsupportedVolumeController(),
     refreshHz: 60,
     maxQueuedFrameBytes: opts.maxQueuedFrameBytes,
   });
@@ -272,6 +276,7 @@ test("lowers the encoder bitrate when the link is congested", async () => {
     typingBackend: fakeTyping(),
     inputLock: fakeInputLock(),
     audio: new AudioCapture(null),
+    volume: new UnsupportedVolumeController(),
     refreshHz: 60,
     maxQueuedFrameBytes: -1, // every frame is "behind"; simulates saturation
     initialBitrateKbps: 2500,
@@ -330,6 +335,7 @@ test("steps resolution and fps down when bitrate hits the floor", async () => {
     typingBackend: fakeTyping(),
     inputLock: fakeInputLock(),
     audio: new AudioCapture(null),
+    volume: new UnsupportedVolumeController(),
     refreshHz: 60,
     maxQueuedFrameBytes: -1, // permanently "behind"
     initialBitrateKbps: 700, // close to the floor, so it bottoms out quickly

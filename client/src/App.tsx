@@ -407,6 +407,44 @@ export function App() {
                 <span className="volume-value">{Math.round(listen.volume * 100)}%</span>
               </label>
             )}
+            {/* The agent machine's own speakers. Deliberately below the local
+                volume and separately labelled: this one is heard in the room
+                the agent is in, by whoever is standing there. */}
+            <div className="agent-volume">
+              <div className="agent-volume-head">
+                <span className="agent-volume-title">Agent's own speakers</span>
+                <button
+                  type="button"
+                  className={`btn-mini ${conn.outputVolume.muted ? "active" : ""}`}
+                  onClick={() => conn.setOutputMute(!conn.outputVolume.muted)}
+                  disabled={!connected || !conn.outputVolume.supported}
+                >
+                  {conn.outputVolume.muted ? "🔇 Unmute" : "🔈 Mute"}
+                </button>
+              </div>
+              <label className="volume-row">
+                <span className="volume-label">Level</span>
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  step={1}
+                  value={conn.outputVolume.level}
+                  onChange={(e) => conn.setOutputVolume(Number(e.target.value))}
+                  disabled={!connected || !conn.outputVolume.supported}
+                />
+                <span className="volume-value">
+                  {conn.outputVolume.supported ? `${conn.outputVolume.level}%` : "—"}
+                </span>
+              </label>
+              <p className="hint">
+                {!conn.outputVolume.supported
+                  ? "This agent can't control its output volume."
+                  : conn.outputVolume.muted
+                    ? "The agent machine is muted — silent in the room it's in, too."
+                    : "Changes the volume on the agent machine itself."}
+              </p>
+            </div>
             <p className="hint">
               {!conn.audio.supported
                 ? "This agent can't capture its system audio."

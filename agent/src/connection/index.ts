@@ -15,6 +15,7 @@ import {
 } from "@bcsa/shared";
 import type { ScreenCapture } from "../capture/index.js";
 import type { AudioCapture } from "../audio/index.js";
+import type { VolumeController } from "../audio/volume.js";
 import type { InputController } from "../input/index.js";
 import { runAutotype, type TypingBackend } from "../autotyper/index.js";
 import type { InputLockManager } from "../inputlock/index.js";
@@ -32,6 +33,8 @@ export interface ServerDeps {
   typingBackend: TypingBackend;
   inputLock: InputLockManager;
   audio: AudioCapture;
+  /** Controls the agent machine's own output volume; may report unsupported. */
+  volume: VolumeController;
   /** Detected display refresh rate (Hz), reported to the client for fps target. */
   refreshHz: number;
   /** Human-readable capture engine actually in use, surfaced in diagnostics. */
@@ -553,6 +556,10 @@ export class ConnectionServer {
       supported: this.deps.audio.supported,
     });
 
+    // The machine's own output volume, so the client's slider starts where the
+    // machine actually is rather than at an invented default.
+    void this.sendVolumeState(ws);
+
     this.deps.capture.setInterval(SCREENSHOT_INTERVAL);
     this.startCapture();
   }
@@ -642,6 +649,12 @@ export class ConnectionServer {
         case "setAudio":
           this.handleSetAudio(ws, msg.enabled);
           break;
+        case "setOutputVolume":
+          await this.handleSetOutputVolume(msg.level);
+          break;
+        case "setOutputMute":
+          await this.handleSetOutputMute(msg.muted);
+          break;
         case "runDiagnostics":
           await this.handleRunDiagnostics(ws);
           break;
@@ -711,6 +724,40 @@ export class ConnectionServer {
    * Start or stop streaming system-audio (loopback) frames to the controller.
    * If capture isn't supported, reports that honestly instead of a silent no-op.
    */
+  /**
+   * Applies a volume change, then reports what the machine actually ended up
+   * at rather than echoing what was asked for.
+   *
+   * The two can differ: the OS clamps, quantises to its own step size, and may
+   * refuse outright. Echoing the request would leave the client's slider
+   * showing a value the machine is not at, and the disagreement would persist
+   * until something else refreshed it.
+   */
+  private async handleSetOutputVolume(level: number): Promise<void> {
+    await this.deps.volume.setLevel(level);
+    await this.sendVolumeState();
+  }
+
+  private async handleSetOutputMute(muted: boolean): Promise<void> {
+    await this.deps.volume.setMuted(muted);
+    await this.sendVolumeState();
+  }
+
+  /** Tell the connected client the machine's current output volume. */
+  private async sendVolumeState(ws: WebSocket | null = this.controller): Promise<void> {
+    if (!ws) return;
+    const supported = this.deps.volume.supported;
+    const current = supported ? await this.deps.volume.get() : null;
+    this.send(ws, {
+      type: "outputVolumeState",
+      // A controller that cannot read the level cannot report one honestly,
+      // so it is reported unsupported even where the platform is implemented.
+      supported: supported && current !== null,
+      level: current?.level ?? 0,
+      muted: current?.muted ?? false,
+    });
+  }
+
   private handleSetAudio(ws: WebSocket, enabled: boolean): void {
     if (enabled && !this.deps.audio.supported) {
       this.send(ws, {

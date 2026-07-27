@@ -15,6 +15,7 @@ import { existsSync } from "node:fs";
 import { dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 import { AudioCapture, detectLoopbackDevice } from "./audio/index.js";
+import { detectVolumeController } from "./audio/volume.js";
 import { InputLockManager } from "./inputlock/index.js";
 import { createInputLockBackend } from "./inputlock/backends.js";
 import { registerLockHotkey } from "./inputlock/hotkey.js";
@@ -52,6 +53,9 @@ async function main(): Promise<void> {
   // is wasted work.
   const loopback = detectLoopbackDevice();
   const audio = new AudioCapture(loopback);
+  // Controls the machine's own speakers, which is unrelated to capturing them:
+  // a machine with no loopback device can still have its volume changed.
+  const volume = await detectVolumeController();
 
   // Prefer the continuous ffmpeg pipeline (can sustain ~30fps); fall back to the
   // per-frame screenshot loop (a few fps) when ffmpeg isn't installed.
@@ -129,6 +133,7 @@ async function main(): Promise<void> {
     typingBackend,
     inputLock,
     audio,
+    volume,
     refreshHz,
     captureKind,
     // Serve the built client from the agent when it exists, so the UI is

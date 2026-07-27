@@ -105,6 +105,28 @@ export const SetAudioMessage = z.object({
   enabled: z.boolean(),
 });
 
+/**
+ * Set the agent machine's own output volume, or mute it.
+ *
+ * Distinct from anything the client plays locally: this changes what the remote
+ * machine itself is doing, so muting it silences the person sitting in front of
+ * it as well as the stream. That is the point — it is the same control you
+ * would reach for if you were there — but it is why the two volumes are
+ * deliberately separate controls rather than one slider.
+ *
+ * `level` is a percentage so the wire format does not commit to any platform's
+ * scale; each agent maps it onto whatever its OS uses.
+ */
+export const SetOutputVolumeMessage = z.object({
+  type: z.literal("setOutputVolume"),
+  level: z.number().min(0).max(100),
+});
+
+export const SetOutputMuteMessage = z.object({
+  type: z.literal("setOutputMute"),
+  muted: z.boolean(),
+});
+
 // ---- agent -> client ----
 
 export const AuthResultMessage = z.object({
@@ -206,6 +228,22 @@ export const AudioStateMessage = z.object({
   supported: z.boolean(),
 });
 
+/**
+ * The agent machine's current output volume.
+ *
+ * `supported` is false where the platform offers no way to read or set it, so
+ * the client shows the control as unavailable rather than moving a slider that
+ * silently does nothing. The agent sends this on connect and after every
+ * change, including changes it did not make — the level is the machine's, and
+ * anyone sitting at it can turn the knob too.
+ */
+export const OutputVolumeStateMessage = z.object({
+  type: z.literal("outputVolumeState"),
+  supported: z.boolean(),
+  level: z.number().min(0).max(100),
+  muted: z.boolean(),
+});
+
 // ---- unions ----
 
 export const ClientMessage = z.discriminatedUnion("type", [
@@ -217,6 +255,8 @@ export const ClientMessage = z.discriminatedUnion("type", [
   CancelAutotypeMessage,
   SetInputLockMessage,
   SetAudioMessage,
+  SetOutputVolumeMessage,
+  SetOutputMuteMessage,
   RunDiagnosticsMessage,
 ]);
 export type ClientMessage = z.infer<typeof ClientMessage>;
@@ -229,6 +269,7 @@ export const AgentMessage = z.discriminatedUnion("type", [
   AgentErrorMessage,
   InputLockStateMessage,
   AudioStateMessage,
+  OutputVolumeStateMessage,
   DiagnosticsMessage,
 ]);
 export type AgentMessage = z.infer<typeof AgentMessage>;

@@ -884,6 +884,37 @@ input[type="range"]::-moz-range-thumb {
   flex-shrink: 0;
 }
 
+/* Separated from the local volume above by a rule, because the two do very
+   different things and sit next to each other. */
+.agent-volume {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+.agent-volume-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.agent-volume-title {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  letter-spacing: 0.04em;
+}
+.agent-volume .volume-row {
+  margin-top: 8px;
+}
+.agent-volume input[type="range"]:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.btn-mini.active {
+  border-color: rgba(224, 122, 95, 0.5);
+  color: var(--amber);
+}
+
 /* ---- Full screen ----------------------------------------------------------
    Applied in both modes: with the real Fullscreen API, and on its own where
    that API cannot be used (iOS Safari refuses fullscreen for anything but a
