@@ -38,8 +38,27 @@ interface ScreenViewProps {
 
 // Interval used for each mode (matches guidance in the protocol notes).
 export const SCREENSHOT_INTERVAL_MS = 2000;
-/** Our ceiling for auto fps, matching the agent's ffmpeg cap. */
-export const MAX_FPS = 120;
+/**
+ * Ceiling for auto fps in Classic mode.
+ *
+ * Classic is MJPEG, so every frame is a full intra frame with no inter-frame
+ * prediction — a completely static desktop costs full price on every single
+ * frame. Measured against a real 1920-wide capture, one frame is ~267KB, so
+ * the old 120 ceiling (chosen to match the agent's ffmpeg cap, and reached on
+ * any 120Hz display) asked for roughly 206 Mbit/s. No WiFi or Tailscale link
+ * carries that, so the surplus simply queued on the agent and the picture fell
+ * permanently behind real time.
+ *
+ * The agent now drops rather than queues (see MAX_QUEUED_FRAME_BYTES in
+ * agent/src/connection/index.ts), which bounds the latency — but requesting
+ * 120fps would still spend a JPEG encode on ~90 frames a second purely to
+ * throw them away. 30fps is past what remote control needs, cuts the ask to
+ * ~63 Mbit/s, and leaves the drop path as headroom rather than the norm.
+ *
+ * This is a Classic-only ceiling; the WebRTC path has its own per-tier fps cap
+ * and real congestion control, and is the better choice over the internet.
+ */
+export const MAX_FPS = 30;
 
 /**
  * Interval (ms) to request for a mode. Video auto-targets the agent's display

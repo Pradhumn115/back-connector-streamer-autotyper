@@ -80,7 +80,7 @@ function fakeWebrtcFfmpegArgs(): { video: (port: number) => string[]; audio: (po
 async function startServer(
   secret: string,
   recorded: string[],
-  opts: { captureStopCalls?: { count: number } } = {},
+  opts: { captureStopCalls?: { count: number }; maxQueuedFrameBytes?: number } = {},
 ) {
   const server = new ConnectionServer({
     secret,
@@ -95,6 +95,7 @@ async function startServer(
     audio: new AudioCapture(null), // no loopback device -> supported:false, no ffmpeg
     refreshHz: 60,
     webrtcFfmpegArgs: fakeWebrtcFfmpegArgs(),
+    maxQueuedFrameBytes: opts.maxQueuedFrameBytes,
   });
   await server.listen();
   return server;
@@ -310,5 +311,53 @@ test("rejects a second concurrent controller as busy", async () => {
 
   a.close();
   b.close();
+  await server.close();
+});
+
+/**
+ * Backpressure: Classic frames must be DROPPED, not queued, once the socket is
+ * behind.
+ *
+ * Classic is MJPEG, so every frame is a full intra frame — measured at ~267KB
+ * at 1920 wide, which is ~206 Mbit/s at the 120fps the client requests on a
+ * 120Hz display. No WiFi or Tailscale link carries that, and with no ceiling ws
+ * simply queued the surplus in memory: the backlog grew every second and the
+ * picture fell permanently behind real time. That was the "Classic lags after
+ * 10-15s" symptom — nothing was being dropped, and that was the bug.
+ *
+ * A loopback socket drains far too fast to build a real backlog on demand, so
+ * the threshold is moved instead: at -1, `bufferedAmount > -1` is always true
+ * and every frame must take the drop path. The control channel is exercised
+ * afterwards to prove the connection is still healthy — i.e. that frames were
+ * deliberately dropped rather than the session being broken.
+ */
+test("drops Classic frames instead of queueing them when the socket is behind", async () => {
+  const recorded: string[] = [];
+  const server = await startServer("s3cret", recorded, { maxQueuedFrameBytes: -1 });
+  const port = server.boundPort();
+
+  const ws = new WebSocket(`wss://127.0.0.1:${port}`, { rejectUnauthorized: false });
+  await once(ws, "open");
+
+  const infoPromise = nextMessage(ws, "agentInfo");
+  ws.send(encodeMessage({ type: "auth", secret: "s3cret" }));
+  await infoPromise;
+
+  let frames = 0;
+  ws.on("message", (data: WebSocket.RawData, isBinary: boolean) => {
+    if (isBinary && isFrame(new Uint8Array(data as Buffer))) frames++;
+  });
+
+  // Comfortably longer than the 30fps fake capture's interval, so a working
+  // send path would have delivered many frames by now.
+  await new Promise((r) => setTimeout(r, 400));
+  assert.equal(frames, 0, `expected every frame to be dropped, got ${frames}`);
+
+  // The session must still be alive — dropping frames is not disconnecting.
+  ws.send(encodeMessage({ type: "mouse", action: "click", x: 0.5, y: 0.5, button: "left" }));
+  await new Promise((r) => setTimeout(r, 100));
+  assert.ok(recorded.includes("button(click,left)"), "control channel should still work");
+
+  ws.close();
   await server.close();
 });

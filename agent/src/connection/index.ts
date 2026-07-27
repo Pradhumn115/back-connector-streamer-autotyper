@@ -40,6 +40,13 @@ export interface ServerDeps {
     video: (tier: VideoCodecTier, port: number) => string[];
     audio: (port: number) => string[];
   };
+  /**
+   * Overrides the Classic backpressure threshold (see MAX_QUEUED_FRAME_BYTES).
+   * Test-only escape hatch: a loopback socket drains far too fast to build a
+   * real backlog on demand, so the drop path can only be exercised by moving
+   * the threshold. Omit in real usage.
+   */
+  maxQueuedFrameBytes?: number;
 }
 
 const SCREENSHOT_INTERVAL = 2000;
@@ -62,6 +69,34 @@ function secretsMatch(provided: string, expected: string): boolean {
 }
 
 /**
+ * How many bytes may sit unsent in the controller socket before Classic frames
+ * start being dropped instead of queued.
+ *
+ * Classic is MJPEG: every frame is a full intra frame, ~90-270KB at the sizes
+ * this agent captures (measured: 267KB at 1920 wide, q:v 6). At the 120fps the
+ * client requests on a 120Hz display that is ~206 Mbit/s, which no WiFi or
+ * Tailscale link carries. Without a ceiling, ws simply queues the surplus in
+ * memory: the backlog grew by roughly the difference every second, so the
+ * picture fell steadily further behind real time and never recovered. That is
+ * the "Classic starts lagging after 10-15s" symptom -- not dropped frames, and
+ * not a scaling bug, but unbounded queueing.
+ *
+ * Two frames' worth. Big enough that ordinary jitter doesn't cause drops, small
+ * enough that the displayed frame is never more than a frame or two old. This
+ * is the same drop-stale policy the client already applies on receive (see
+ * useConnection's handleFrame): for a live screen, a queued frame is worthless
+ * the instant a newer one exists, so dropping is strictly correct rather than a
+ * compromise.
+ *
+ * The WebRTC path needs no equivalent -- congestion control is part of the
+ * transport there.
+ */
+const MAX_QUEUED_FRAME_BYTES = 512 * 1024;
+
+/** Minimum gap between "dropping frames" log lines. */
+const DROP_LOG_THROTTLE_MS = 5000;
+
+/**
  * The agent's WSS server. Accepts a single authenticated controller at a time,
  * streams screen frames to it, and applies its mouse/keyboard/autotype commands.
  */
@@ -74,6 +109,9 @@ export class ConnectionServer {
   private autotyping = false;
   private autotypeAbort: AbortController | null = null;
   private webrtc: WebrtcSession | null = null;
+  /** Frames dropped for backpressure since the last log line. */
+  private droppedFrames = 0;
+  private lastDropLogAt = 0;
 
   constructor(private readonly deps: ServerDeps) {}
 
@@ -132,6 +170,27 @@ export class ConnectionServer {
 
   private send(ws: WebSocket, msg: AgentMessage): void {
     if (ws.readyState === ws.OPEN) ws.send(encodeMessage(msg));
+  }
+
+  /**
+   * Reports sustained frame dropping, throttled.
+   *
+   * Dropping is the correct response to a saturated link, but silence about it
+   * would be misleading: a user seeing a low frame rate deserves to know the
+   * link is the limit rather than the capture. Throttled because under real
+   * saturation this fires on nearly every captured frame.
+   */
+  private logDroppedFrames(bufferedAmount: number): void {
+    const now = Date.now();
+    if (now - this.lastDropLogAt < DROP_LOG_THROTTLE_MS) return;
+    const dropped = this.droppedFrames;
+    this.droppedFrames = 0;
+    this.lastDropLogAt = now;
+    process.stderr.write(
+      `[capture] link saturated — dropped ${dropped} frame(s), ` +
+        `${(bufferedAmount / 1024).toFixed(0)}KB still queued. ` +
+        `Lower the frame rate or resolution, or use WebRTC, for a smoother stream.\n`,
+    );
   }
 
   private onConnection(ws: WebSocket): void {
@@ -236,10 +295,21 @@ export class ConnectionServer {
    */
   private startCapture(): void {
     this.deps.capture.start((image) => {
-      if (this.controller?.readyState === this.controller?.OPEN) {
-        const buf = encodeFrame(this.seq++, Date.now(), image.format, image.data);
-        this.controller!.send(buf, { binary: true });
+      const ws = this.controller;
+      if (ws?.readyState !== ws?.OPEN || !ws) return;
+
+      // Drop rather than queue once the socket is already behind. Encoding is
+      // skipped too, not just the send: a frame that would only be dropped is
+      // not worth the JPEG encode. See MAX_QUEUED_FRAME_BYTES for why an
+      // unbounded queue here made Classic drift permanently behind real time.
+      if (ws.bufferedAmount > (this.deps.maxQueuedFrameBytes ?? MAX_QUEUED_FRAME_BYTES)) {
+        this.droppedFrames++;
+        this.logDroppedFrames(ws.bufferedAmount);
+        return;
       }
+
+      const buf = encodeFrame(this.seq++, Date.now(), image.format, image.data);
+      ws.send(buf, { binary: true });
     });
   }
 
