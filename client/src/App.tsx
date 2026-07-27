@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { StreamMode } from "@bcsa/shared";
 import { useConnection } from "./connect/useConnection";
 import { useAudioTranscription } from "./audio/useAudioTranscription";
+import { useAudioPlayback } from "./audio/useAudioPlayback";
 import { useRemoteControl } from "./control/useRemoteControl";
 import { useTouchControl } from "./control/useTouchControl";
 import { useSoftKeyboard } from "./control/useSoftKeyboard";
@@ -24,6 +25,7 @@ function fmtElapsed(ms: number): string {
 export function App() {
   // Owns the Whisper worker; conn feeds it decoded audio frames.
   const audioTx = useAudioTranscription();
+  const listen = useAudioPlayback();
   // Declared before useConnection because the H.264 decoder needs the canvas
   // and useConnection needs the decoder's pushFrame.
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -51,7 +53,12 @@ export function App() {
   // invisible to everything downstream.
   const wt = useWebtransport(h264.pushFrame);
   const conn = useConnection({
-    onAudioFrame: audioTx.pushFrame,
+    onAudioFrame: (frame) => {
+      // One stream, two independent consumers: transcribing ignores it when
+      // off, and playback ignores it when off.
+      audioTx.pushFrame(frame);
+      listen.pushFrame(frame);
+    },
     onVideoFrame: h264.pushFrame,
   });
   // Connect-bar form fields, seeded from cached params.
@@ -135,35 +142,39 @@ export function App() {
     conn.send({ type: "setMode", mode: next, intervalMs: intervalForMode(next, refreshHz) });
   };
 
-  // Live captions: continuous, VAD-gated transcription. Audio always arrives
-  // as PCM over the WebSocket, so it is started and stopped unconditionally.
+  // Live captions: continuous, VAD-gated transcription.
   const onToggleLive = (on: boolean) => {
-    if (on) {
-      audioTx.startLive();
-      conn.setAudio(true);
-    } else {
-      conn.setAudio(false);
-      audioTx.stopLive();
-    }
+    if (on) audioTx.startLive();
+    else audioTx.stopLive();
   };
 
   // Record mode: buffer the take while recording; transcribe it on pause.
   const onRecordToggle = () => {
-    if (audioTx.recording) {
-      conn.setAudio(false);
-      void audioTx.pauseRecording();
-    } else {
-      audioTx.startRecording();
-      conn.setAudio(true);
-    }
+    if (audioTx.recording) void audioTx.pauseRecording();
+    else audioTx.startRecording();
   };
 
   // Switching modes stops any active capture/transcription first.
   const onSwitchMode = (next: "live" | "record") => {
     if (next === audioTx.mode) return;
-    conn.setAudio(false);
     audioTx.setMode(next);
   };
+
+  /**
+   * The agent captures while anything wants audio, and stops when nothing does.
+   *
+   * Previously each transcription control started and stopped the capture
+   * itself, which was correct only while transcription was the sole consumer.
+   * With listening added, "stop transcribing" would also have silenced audio
+   * the user had deliberately turned on. Deriving the capture state from who
+   * actually wants it makes that impossible to get wrong as consumers are
+   * added.
+   */
+  const audioWanted = listen.enabled || audioTx.liveActive || audioTx.recording;
+  useEffect(() => {
+    if (!connected) return;
+    conn.setAudio(audioWanted);
+  }, [audioWanted, connected, conn.setAudio]);
 
   // Stop live transcription if the connection drops (audio stops arriving),
   // and drop the H.264 decoder with it — it was primed against a keyframe from
@@ -172,6 +183,10 @@ export function App() {
   useEffect(() => {
     if (!connected) {
       audioTx.stopLive();
+      // Playback too: the queue would otherwise sit holding its last scheduled
+      // chunks with nothing arriving to follow them, and the context would stay
+      // open on a dead stream.
+      listen.setEnabled(false);
       h264.reset();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -356,6 +371,52 @@ export function App() {
                 : conn.inputLock.locked
                   ? "Agent's physical keyboard/mouse are blocked. Auto-releases after 10s idle or on disconnect."
                   : "Blocks the person at the agent from interfering — only your input gets through."}
+            </p>
+          </div>
+
+          <div className="card">
+            <div className="card-head">
+              <span className="card-title">Listen</span>
+              {listen.enabled && listen.status === "running" && (
+                <span className="card-note on">live</span>
+              )}
+            </div>
+            <label className="switch">
+              <input
+                type="checkbox"
+                checked={listen.enabled}
+                // The change event is a user gesture, which is what lets the
+                // audio context start — a browser refuses to open one otherwise.
+                onChange={(e) => listen.setEnabled(e.target.checked)}
+                disabled={!connected || !conn.audio.supported}
+              />
+              <span className="switch-track" />
+              <span className="switch-label">Play the agent's audio here</span>
+            </label>
+            {listen.enabled && (
+              <label className="volume-row">
+                <span className="volume-label">Volume</span>
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.01}
+                  value={listen.volume}
+                  onChange={(e) => listen.setVolume(Number(e.target.value))}
+                />
+                <span className="volume-value">{Math.round(listen.volume * 100)}%</span>
+              </label>
+            )}
+            <p className="hint">
+              {!conn.audio.supported
+                ? "This agent can't capture its system audio."
+                : listen.error
+                  ? listen.error
+                  : listen.enabled
+                    ? `Hearing the remote machine.${
+                        listen.resyncs > 0 ? ` ${listen.resyncs} dropout(s).` : ""
+                      }`
+                    : "Hear what the agent is playing. Independent of transcription."}
             </p>
           </div>
 
