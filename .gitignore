@@ -15,3 +15,6 @@ agent/native/bin/
 test-results/
 playwright-report/
 .playwright-mcp/
+
+# agent scratch dir
+agent/tmp/

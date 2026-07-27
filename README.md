@@ -23,21 +23,15 @@ view its screen, control its mouse/keyboard, and run a human-like autotyper.
 
 ## Features
 
-- **Screen streaming, two transports:**
-  - **Classic** — JPEG frames over the WebSocket. *Screenshot* mode
-    (low-frequency, low-bandwidth) or *Video* mode, which **auto-targets the
-    agent's display refresh rate** (30 / 60 / up to 120 fps) via a continuous
-    ffmpeg pipeline. Simple and robust; higher bandwidth.
-  - **WebRTC** — a real peer connection (**H.264 video + Opus audio**, agent side
-    via `werift` + ffmpeg RTP). Lower latency and bandwidth over the internet.
-    Toggle Classic ⇄ WebRTC in the client; on any WebRTC error it falls back to
-    Classic (no silent failure). The offer lists multiple H.264 quality tiers,
-    so each browser negotiates the best one it actually supports — full
-    native-resolution/high-fps on Chrome/Edge, falling back to a universal
-    baseline profile on Safari and anything else, instead of one fixed codec
-    breaking one browser or another. Playing the agent's audio out loud is a
-    separate, off-by-default toggle (🔊/🔇) next to the video — independent of
-    live transcription, which taps the same track regardless.
+- **Screen streaming** — two modes, both over the one WebSocket:
+  - **Video** (default) — **H.264**, hardware-encoded on the agent when a GPU
+    encoder is available (VideoToolbox / NVENC / QSV / ddagrab), decoded in the
+    browser with **WebCodecs** (`VideoDecoder`). It **auto-targets the agent's
+    display refresh rate** (30 / 60 / up to 120 fps) and is far lower-bandwidth
+    than sending images — good on the internet, not just LAN. Falls back to the
+    JPEG path automatically if H.264 encode or WebCodecs decode isn't available.
+  - **Screenshot** — periodic **JPEG** frames. Low-frequency, low-bandwidth, and
+    works in any browser (no WebCodecs needed) — the simple, universal fallback.
 - **Remote control** — mouse and keyboard forwarded to the agent, mapped 1:1
   (click, double-click, right-click, drag) with resolution-independent
   coordinates.
@@ -55,10 +49,11 @@ view its screen, control its mouse/keyboard, and run a human-like autotyper.
 - **Direct & encrypted** — one TLS WebSocket (`wss://`), a shared secret, and no
   relay/VPS. Works over LAN, Tailscale, or a Cloudflare Tunnel.
 
-> **Transport note:** the default **Classic** path is JPEG frames over the
-> WebSocket — simple, robust, and fast enough to hit your display's refresh rate
-> on LAN. Switch to **WebRTC** (H.264 + Opus) for lower latency and bandwidth,
-> which matters most over the internet. Both are selectable in the client.
+> **How video travels:** everything rides one TLS WebSocket. *Video* mode sends
+> H.264 (a keyframe plus deltas) and the browser decodes it with WebCodecs;
+> *Screenshot* mode sends whole JPEGs. There is no WebRTC/peer-connection — the
+> agent is already a reachable server, so H.264-over-WebSocket gives low bandwidth
+> without any SDP/ICE negotiation.
 
 ## Layout
 
@@ -121,12 +116,11 @@ npm run build        # builds shared, agent, client
 package manager the OS has (Homebrew on macOS; winget/choco/scoop on Windows;
 apt/dnf/pacman on Linux):
 
-- **ffmpeg** — enables high-fps screen capture **and the WebRTC transport** (its
-  H.264/Opus RTP relays). Without it the agent falls back to a slow per-frame
-  path (a few fps) and WebRTC is unavailable. **On Windows this is the fix for
-  low video fps.** After it installs on Windows, open a NEW terminal so PATH
-  updates, then `npm run agent`. (WebRTC's `werift` needs no system install — it
-  comes with `npm install`.)
+- **ffmpeg** — powers screen capture and the **H.264 video encode** (using a
+  hardware encoder when available). Without it, Video mode falls back to slow
+  per-frame JPEG capture (a few fps). **On Windows this is the fix for low video
+  fps.** After it installs on Windows, open a NEW terminal so PATH updates, then
+  `npm run agent`.
 - **cloudflared** — optional, only needed for `npm run tunnel` (remote access
   without a VPN).
 
@@ -199,7 +193,7 @@ Then:
 - **Transcribe audio:** live text transcript of whatever is playing on the
   agent, produced by a speech model running in your browser. Both **Live**
   (continuous, VAD-gated) and **Record** (buffer a take, transcribe on pause)
-  modes work identically under Classic and WebRTC. See below.
+  modes are available. See below.
 - **Diagnostics:** runs on connect (and on demand) — checks the connection,
   frames, ffmpeg, capture engine, permissions, input-lock, and audio device, and
   shows the fix for anything wrong. Includes a *Copy* button for the report.
@@ -237,14 +231,7 @@ The client's **"Transcribe audio"** toggle captures whatever is playing on the
 agent (system output) and turns it into a live text transcript. The speech model
 (**Whisper**, via `@huggingface/transformers`) runs **entirely in your browser** —
 the audio is transcribed locally and **never leaves the client**. Transcription
-itself never plays audio; it only feeds the model. Under **WebRTC**, the video
-element carries a separate, off-by-default 🔊/🔇 toggle if you actually want to
-hear the agent's audio out loud — that's independent of transcription, which
-taps the same track either way.
-
-Both **Live** and **Record** modes work the same whether you're on Classic or
-WebRTC — switching transport mid-session doesn't interrupt an active
-transcription; it just keeps consuming whichever audio path is currently live.
+itself never plays audio; it only feeds the model.
 
 **How it works:** the agent captures its loopback audio with ffmpeg as 16 kHz
 mono PCM and streams it to the client, which resamples nothing (already Whisper's
@@ -379,26 +366,17 @@ npm run typecheck                 # typecheck all workspaces
 npm run build                     # build all workspaces
 ```
 
-## If Classic video feels laggy
+## Video troubleshooting
 
-Classic video is JPEG-frames-over-WebSocket — simple and robust, but heavier on
-bandwidth (a 120fps stream is ~85 Mbps), which is fine on LAN/Tailscale but a lot
-over the internet. If it feels laggy, **switch the transport to WebRTC** in the
-client: it uses a real peer connection with H.264 video + Opus audio (agent side
-via `werift` + ffmpeg RTP), so it adapts bitrate and stays low-latency over
-constrained links. On any WebRTC failure the client falls back to Classic and
-shows the error rather than freezing.
-
-### WebRTC troubleshooting
+Video mode sends **H.264** (hardware-encoded on the agent when possible) over the
+WebSocket, decoded in the browser with **WebCodecs** — already low-bandwidth.
+If something's off:
 
 | Symptom | Cause & fix |
 |---|---|
-| **Toggle flips back to Classic** | WebRTC couldn't establish — the client never fails silently. Check the error hint, then the rows below. |
-| **Agent diagnostics: "WebRTC unavailable"** | The RTP relay needs **ffmpeg** on the agent. Run `npm run setup` and restart the agent. |
-| **"Browser WebRTC" warns in diagnostics** | Your browser lacks `RTCPeerConnection`. Use a modern browser; Classic mode still works. |
-| **Black video after switching** | Codec negotiation or the peer connection failed to complete. It should auto-revert to Classic; if not, toggle back and retry. Very restrictive networks can block the peer connection (STUN/ICE) — use Classic there. |
-| **Video works, no audio (or vice-versa)** | One track's codec (H.264 / Opus) didn't negotiate. Retry the toggle; check the agent log for a codec-negotiation error. |
-| **Windows: `Failed to capture image (error 5)` in the agent log** | `gdigrab` (the default Windows capture) is refused by Windows whenever a **secure desktop** is showing — a UAC prompt, the lock screen, or Ctrl+Alt+Del — and it exits rather than recovering. The agent now respawns it automatically (4 tries with backoff), so a passing UAC prompt no longer ends the stream. If it fails *persistently*, switch capture backends: see below. |
+| **Video stays blank / falls back to Screenshot** | The browser lacks **WebCodecs** (`VideoDecoder`), or the agent couldn't produce H.264 (no ffmpeg). Use a modern browser and run `npm run setup` on the agent; Screenshot mode always works as the fallback. |
+| **Feels laggy over the internet** | Lower the target: use **Screenshot** mode (very light), or a lower-refresh display. On LAN, full-rate H.264 is fine. |
+| **Windows: `Failed to capture image (error 5)` in the agent log** | `gdigrab` (the default Windows capture) is refused by Windows whenever a **secure desktop** is showing — a UAC prompt, the lock screen, or Ctrl+Alt+Del — and it exits rather than recovering. The agent respawns it automatically (4 tries with backoff), so a passing UAC prompt no longer ends the stream. If it fails *persistently*, switch capture backends: see below. |
 
 #### Windows: switching to the `ddagrab` capture backend
 
@@ -421,5 +399,4 @@ If that works, start the agent with the backend selected:
 $env:BCSA_WIN_CAPTURE="ddagrab"; npm run agent
 ```
 
-Both Classic and WebRTC pick it up. Unset it (or set anything else) to go back
-to `gdigrab`.
+Video mode picks it up. Unset it (or set anything else) to go back to `gdigrab`.
