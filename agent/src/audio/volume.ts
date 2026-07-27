@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 
 const run = promisify(execFile);
@@ -123,6 +123,188 @@ class PulseVolumeController implements VolumeController {
   }
 }
 
+/**
+ * The C# that talks to Windows' audio endpoint, compiled by PowerShell at
+ * startup.
+ *
+ * ## Why this rather than installing something
+ *
+ * Windows ships no volume command. The obvious answer is to fetch a small tool
+ * like nircmd, but downloading and running a third-party binary on the user's
+ * machine to move a slider is a poor trade: it is one more thing to trust, to
+ * keep current, and to explain to whatever scans their machine.
+ *
+ * Everything needed is already present. Windows has exposed volume through the
+ * Core Audio COM interfaces since Vista, and PowerShell's `Add-Type` compiles
+ * C# using the .NET Framework compiler that ships with the OS. So this is a
+ * few dozen lines of interop rather than a dependency.
+ *
+ * ## Why it runs as one long-lived process
+ *
+ * `Add-Type` compiles on first use, which takes on the order of a second. A
+ * volume slider being dragged sends changes continuously, and paying that per
+ * change would make the control unusable. The process is started once, holds
+ * the compiled type, and reads commands from stdin for the life of the agent.
+ *
+ * Only three commands are accepted — get, set with a number, mute with 0 or 1 —
+ * and the number is clamped before it is written. Nothing from the network is
+ * ever concatenated into PowerShell source.
+ */
+const WINDOWS_VOLUME_SCRIPT = `
+$ErrorActionPreference = 'Stop'
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+
+[Guid("5CDF2C82-841E-4546-9722-0CF74078229A"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IAudioEndpointVolume {
+  int NotImpl1(); int NotImpl2();
+  int GetChannelCount(out uint c);
+  int SetMasterVolumeLevel(float level, ref Guid ctx);
+  int SetMasterVolumeLevelScalar(float level, ref Guid ctx);
+  int GetMasterVolumeLevel(out float level);
+  int GetMasterVolumeLevelScalar(out float level);
+  int SetChannelVolumeLevel(uint ch, float level, ref Guid ctx);
+  int SetChannelVolumeLevelScalar(uint ch, float level, ref Guid ctx);
+  int GetChannelVolumeLevel(uint ch, out float level);
+  int GetChannelVolumeLevelScalar(uint ch, out float level);
+  int SetMute([MarshalAs(UnmanagedType.Bool)] bool mute, ref Guid ctx);
+  int GetMute([MarshalAs(UnmanagedType.Bool)] out bool mute);
+}
+
+[Guid("D666063F-1587-4E43-81F1-B948E807363F"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IMMDevice {
+  int Activate(ref Guid id, int ctx, IntPtr act, [MarshalAs(UnmanagedType.IUnknown)] out object o);
+}
+
+[Guid("A95664D2-9614-4F35-A746-DE8DB63617E6"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IMMDeviceEnumerator {
+  int NotImpl1();
+  int GetDefaultAudioEndpoint(int dataFlow, int role, out IMMDevice dev);
+}
+
+[ComImport, Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")]
+class MMDeviceEnumeratorComObject { }
+
+public static class Vol {
+  static IAudioEndpointVolume Endpoint() {
+    var enumerator = (IMMDeviceEnumerator)new MMDeviceEnumeratorComObject();
+    IMMDevice dev;
+    // 0 = eRender (output), 1 = eMultimedia (the volume the user thinks of).
+    Marshal.ThrowExceptionForHR(enumerator.GetDefaultAudioEndpoint(0, 1, out dev));
+    var iid = typeof(IAudioEndpointVolume).GUID;
+    object o;
+    Marshal.ThrowExceptionForHR(dev.Activate(ref iid, 23, IntPtr.Zero, out o));
+    return (IAudioEndpointVolume)o;
+  }
+  public static float Get() { float v; Marshal.ThrowExceptionForHR(Endpoint().GetMasterVolumeLevelScalar(out v)); return v; }
+  public static bool GetMute() { bool m; Marshal.ThrowExceptionForHR(Endpoint().GetMute(out m)); return m; }
+  public static void Set(float v) { Guid g = Guid.Empty; Marshal.ThrowExceptionForHR(Endpoint().SetMasterVolumeLevelScalar(v, ref g)); }
+  public static void Mute(bool m) { Guid g = Guid.Empty; Marshal.ThrowExceptionForHR(Endpoint().SetMute(m, ref g)); }
+}
+'@
+
+# One line in, one line out, so the caller can pair replies to requests.
+while ($true) {
+  $line = [Console]::In.ReadLine()
+  if ($null -eq $line) { break }
+  $parts = $line.Trim().Split(' ')
+  try {
+    switch ($parts[0]) {
+      'get'  { "{0},{1}" -f [int][Math]::Round([Vol]::Get() * 100), ([Vol]::GetMute().ToString().ToLower()) }
+      'set'  { [Vol]::Set([double]$parts[1] / 100.0); [Vol]::Mute($false); 'ok' }
+      'mute' { [Vol]::Mute($parts[1] -eq '1'); 'ok' }
+      default { 'err' }
+    }
+  } catch { 'err' }
+}
+`;
+
+/**
+ * Only the parts of the helper process this class touches.
+ *
+ * Declared structurally rather than as ChildProcessWithoutNullStreams because
+ * stderr is inherited, which changes the concrete type — and asserting past
+ * that would be claiming a stderr stream exists when it does not.
+ */
+interface VolumeHelperProcess {
+  stdin: { write(chunk: string): unknown; end(): unknown };
+  stdout: { setEncoding(enc: string): unknown; on(ev: "data", cb: (chunk: string) => void): unknown };
+  on(ev: "exit", cb: () => void): unknown;
+  kill(): unknown;
+}
+
+class WindowsVolumeController implements VolumeController {
+  readonly supported = true;
+  private proc: VolumeHelperProcess | null = null;
+  /** Resolvers for commands awaiting their reply line, in order. */
+  private pending: ((line: string) => void)[] = [];
+  private stdoutBuf = "";
+
+  constructor(proc: VolumeHelperProcess) {
+    this.proc = proc;
+    proc.stdout.setEncoding("utf8");
+    proc.stdout.on("data", (chunk: string) => {
+      this.stdoutBuf += chunk;
+      let idx: number;
+      while ((idx = this.stdoutBuf.indexOf("\n")) >= 0) {
+        const line = this.stdoutBuf.slice(0, idx).trim();
+        this.stdoutBuf = this.stdoutBuf.slice(idx + 1);
+        if (line) this.pending.shift()?.(line);
+      }
+    });
+    proc.on("exit", () => {
+      this.proc = null;
+      // Anything still waiting will never be answered; fail it rather than
+      // leaving the caller's promise pending for the life of the agent.
+      for (const resolve of this.pending.splice(0)) resolve("err");
+    });
+  }
+
+  /** Send one command and wait for its single reply line. */
+  private send(command: string): Promise<string> {
+    const proc = this.proc;
+    if (!proc) return Promise.resolve("err");
+    return new Promise<string>((resolve) => {
+      const timer = setTimeout(() => {
+        // Drop the resolver so a late reply cannot be paired with a later
+        // command, which would misreport every result after it.
+        const i = this.pending.indexOf(settle);
+        if (i >= 0) this.pending.splice(i, 1);
+        resolve("err");
+      }, 3000);
+      const settle = (line: string) => {
+        clearTimeout(timer);
+        resolve(line);
+      };
+      this.pending.push(settle);
+      proc.stdin.write(`${command}\n`);
+    });
+  }
+
+  async get(): Promise<OutputVolume | null> {
+    const reply = await this.send("get");
+    const [rawLevel, rawMuted] = reply.split(",");
+    const level = Number(rawLevel);
+    if (!Number.isFinite(level)) return null;
+    return { level: clampLevel(level), muted: rawMuted?.trim() === "true" };
+  }
+
+  async setLevel(level: number): Promise<void> {
+    await this.send(`set ${clampLevel(level)}`);
+  }
+
+  async setMuted(muted: boolean): Promise<void> {
+    await this.send(`mute ${muted ? 1 : 0}`);
+  }
+
+  close(): void {
+    this.proc?.stdin.end();
+    this.proc?.kill();
+    this.proc = null;
+  }
+}
+
 /** Reports honestly that nothing can be done, rather than failing silently. */
 class UnsupportedVolumeController implements VolumeController {
   readonly supported = false;
@@ -134,17 +316,49 @@ class UnsupportedVolumeController implements VolumeController {
 }
 
 /**
+ * Start the Windows helper and confirm it answers before trusting it.
+ *
+ * The probe matters: `Add-Type` can fail on a locked-down machine — an
+ * execution policy that blocks it, a missing compiler, a hardened
+ * configuration — and it fails at the first command rather than at spawn. A
+ * controller that reports `supported` and then errors on every call is worse
+ * than one that admits up front that it cannot work, so support is decided by
+ * whether a real reading came back.
+ */
+async function startWindowsController(): Promise<VolumeController> {
+  try {
+    const proc = spawn(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", "-"],
+      // stderr is inherited rather than ignored so a compilation failure is
+      // visible in the agent's log instead of vanishing; the probe below is
+      // what decides support either way.
+      { stdio: ["pipe", "pipe", "inherit"], windowsHide: true },
+    );
+    proc.on("error", () => {});
+    proc.stdin.write(`${WINDOWS_VOLUME_SCRIPT}\n`);
+
+    const controller = new WindowsVolumeController(proc);
+    const probe = await controller.get();
+    if (probe) return controller;
+    controller.close();
+  } catch {
+    // No PowerShell, or it refused to start.
+  }
+  return new UnsupportedVolumeController();
+}
+
+/**
  * Pick a controller for this platform.
  *
- * Windows is deliberately unsupported rather than approximated. It has no
- * command-line volume control in the base install: the usual workarounds are a
- * third-party binary the user would have to install, or synthesising the
- * keyboard's mute key — which toggles rather than sets, so the agent could
- * never report a level it had not guessed. Reporting the feature as
- * unavailable is more useful than a slider that lies about what it did.
+ * Every platform uses what the OS already provides — osascript, pactl,
+ * PowerShell — so none of this requires the user to install anything. Where
+ * that is not possible the controller says so, and the client disables the
+ * control rather than showing a slider that silently does nothing.
  */
 export async function detectVolumeController(): Promise<VolumeController> {
   if (process.platform === "darwin") return new MacVolumeController();
+  if (process.platform === "win32") return startWindowsController();
   if (process.platform === "linux") {
     try {
       await run("pactl", ["--version"]);
@@ -156,4 +370,11 @@ export async function detectVolumeController(): Promise<VolumeController> {
   return new UnsupportedVolumeController();
 }
 
-export { MacVolumeController, PulseVolumeController, UnsupportedVolumeController, clampLevel };
+export {
+  MacVolumeController,
+  PulseVolumeController,
+  UnsupportedVolumeController,
+  WindowsVolumeController,
+  WINDOWS_VOLUME_SCRIPT,
+  clampLevel,
+};

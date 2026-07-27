@@ -11,6 +11,13 @@ export interface DiagContext {
    * pipeline" even when a different engine had been chosen.
    */
   captureKind?: string;
+  /**
+   * Whether the agent can read and set its own output volume, and where it
+   * currently is. Passed in rather than probed here so the panel reports the
+   * controller the server is really using, including one that failed its
+   * startup probe on a locked-down machine.
+   */
+  outputVolume?: { supported: boolean; level: number; muted: boolean } | null;
   /** Encoder actually in use (h264_videotoolbox, libx264, ...), when known. */
   videoEncoder?: string | null;
   /** Current encode size and rate, which the adaptive controller may have changed. */
@@ -123,6 +130,7 @@ export function runDiagnostics(ctx: DiagContext): DiagnosticCheck[] {
 
   checks.push(inputLockCheck(ctx));
   checks.push(audioCheck(ctx));
+  checks.push(volumeCheck(ctx));
 
   return checks;
 }
@@ -154,6 +162,44 @@ function inputLockCheck(ctx: DiagContext): DiagnosticCheck {
     label: "Lock agent's local input",
     status: "ok",
     detail: "supported and ready",
+  };
+}
+
+/**
+ * Reports whether the remote machine's own volume can be driven from here.
+ *
+ * Separate from the audio-loopback check above, because the two are unrelated
+ * in both directions: a machine with no loopback device can still have its
+ * volume changed, and a machine that captures audio perfectly may not let
+ * anyone set it. Reporting them together would make each look like a symptom
+ * of the other.
+ */
+function volumeCheck(ctx: DiagContext): DiagnosticCheck {
+  const label = "Agent volume control";
+  const v = ctx.outputVolume;
+  if (v?.supported) {
+    return {
+      id: "output-volume",
+      label,
+      status: "ok",
+      detail: `${v.level}%${v.muted ? " · muted" : ""}`,
+    };
+  }
+  // Every platform is implemented using what the OS already ships, so an
+  // unsupported result means something specific failed rather than "not built
+  // yet" — the fix names the thing to check on each.
+  const fix =
+    os === "win32"
+      ? "The agent drives volume through PowerShell's Add-Type (no install needed). This usually means PowerShell could not compile it — check that powershell.exe runs and that an execution policy or hardened configuration is not blocking Add-Type."
+      : os === "linux"
+        ? "Install PulseAudio/PipeWire tooling so `pactl` is on PATH (e.g. `sudo apt install pulseaudio-utils`)."
+        : "The agent uses osascript, which ships with macOS. Check that osascript runs and that the terminal is permitted to control the system.";
+  return {
+    id: "output-volume",
+    label,
+    status: "warn",
+    detail: "cannot read or set this machine's output volume",
+    fix,
   };
 }
 

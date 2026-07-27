@@ -673,7 +673,13 @@ export class ConnectionServer {
     } catch {
       screenSize = null; // reported as a failed check
     }
+    // Read the live volume rather than a cached value: the point of the panel
+    // is to report what is true now, and anyone at the machine can change it.
+    const volumeNow = this.deps.volume.supported ? await this.deps.volume.get() : null;
     const checks = runDiagnostics({
+      outputVolume: volumeNow
+        ? { supported: true, level: volumeNow.level, muted: volumeNow.muted }
+        : { supported: false, level: 0, muted: false },
       refreshHz: this.deps.refreshHz,
       captureKind: this.deps.captureKind,
       videoEncoder: this.deps.capture.activeEncoder ?? null,
