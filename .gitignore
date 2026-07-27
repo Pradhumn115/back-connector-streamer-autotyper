@@ -10,3 +10,8 @@ agent/native/bin/
 
 # Claude Code local worktrees/config
 .claude/
+
+# Playwright browser-facing e2e artifacts
+test-results/
+playwright-report/
+.playwright-mcp/

@@ -18,5 +18,8 @@
     "client": "npm run dev --workspace client",
     "tunnel": "node scripts/tunnel.mjs"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "devDependencies": {
+    "@playwright/test": "^1.62.0"
+  }
 }

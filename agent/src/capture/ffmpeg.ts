@@ -245,6 +245,30 @@ export function captureFilterPrefix(): string {
  * encoder/output tail appended after this.
  */
 export function screenCaptureInputArgs(fps: number): string[] {
+  // Synthetic source for automated tests (BCSA_FAKE_CAPTURE=1).
+  //
+  // Grabbing the real screen needs an OS capture permission that is granted to
+  // a *responsible process*, and that grant does not follow an arbitrary
+  // process tree: an agent spawned by a test runner gets no frames at all even
+  // though the same agent started from a shell works fine. Headless CI has no
+  // display to grab in the first place. Either way the encoder produces
+  // nothing and every downstream assertion fails for a reason that has nothing
+  // to do with the code under test.
+  //
+  // The end-to-end tests exercise the transport and codec path — negotiation,
+  // profile, level, packetisation, whether a browser can decode it — none of
+  // which cares where the pixels came from. A deterministic pattern makes that
+  // path testable anywhere, and keeps a genuine failure distinguishable from a
+  // missing permission.
+  if (process.env.BCSA_FAKE_CAPTURE) {
+    // Deliberately not 16:9: the level-conformance maths is area-based, and a
+    // 16:9 source is the one shape a naive width cap also gets right, so
+    // testing with it would hide exactly the bug that shipped.
+    // -re paces the source at wall-clock rate. Without it lavfi generates
+    // frames as fast as the CPU allows and the encoder emits hundreds of fps,
+    // so a test would neither reflect real timing nor catch a stall.
+    return ["-re", "-f", "lavfi", "-i", `testsrc=size=1512x982:rate=${fps}`];
+  }
   switch (platform()) {
     case "darwin":
       return [
