@@ -3,6 +3,7 @@ import type { StreamMode } from "@bcsa/shared";
 import type { LatestFrame } from "../connect/useConnection";
 import type { UseSoftKeyboard } from "../control/useSoftKeyboard";
 import type { UseFullscreen } from "./useFullscreen";
+import { backingStoreSize, computeFitRect, FIT_MODES, type FitMode } from "./fit";
 
 /**
  * The rectangle (in canvas/CSS pixels) the letterboxed frame actually occupies
@@ -41,6 +42,18 @@ interface ScreenViewProps {
   softKeyboard?: UseSoftKeyboard;
   /** Fills the display with the screen view; see useFullscreen. */
   fullscreen?: UseFullscreen;
+  /** Current layout of the frame within the view. */
+  fit: FitMode;
+  onSetFit: (mode: FitMode) => void;
+  /**
+   * The same value as `fit`, in a ref.
+   *
+   * Frames are drawn from callbacks owned by the decoder, which outlive any one
+   * render — reading the prop there would pin whichever value was current when
+   * the decoder was created, so changing the mode would not affect the picture
+   * until the stream restarted.
+   */
+  fitRef: React.MutableRefObject<FitMode>;
 }
 
 // Interval used for each mode (matches guidance in the protocol notes).
@@ -93,6 +106,9 @@ export function ScreenView({
   h264,
   softKeyboard,
   fullscreen,
+  fit,
+  onSetFit,
+  fitRef,
 }: ScreenViewProps) {
   const targetFps = Math.min(MAX_FPS, Math.max(1, Math.round(refreshHz ?? 60)));
   const [fps, setFps] = useState<number>(0);
@@ -121,10 +137,16 @@ export function ScreenView({
     const img = new Image();
     let revoked = false;
     img.onload = () => {
-      // Size the canvas backing store to its displayed CSS size for crispness.
-      const rect = canvas.getBoundingClientRect();
-      const cw = Math.max(1, Math.round(rect.width));
-      const ch = Math.max(1, Math.round(rect.height));
+      // Size the canvas backing store from its displayed box, scaled for the
+      // display's pixel density but never beyond the source resolution.
+      const box = canvas.getBoundingClientRect();
+      const { width: cw, height: ch } = backingStoreSize(
+        box.width,
+        box.height,
+        img.width,
+        img.height,
+        globalThis.devicePixelRatio ?? 1,
+      );
       if (canvas.width !== cw) canvas.width = cw;
       if (canvas.height !== ch) canvas.height = ch;
 
@@ -133,17 +155,14 @@ export function ScreenView({
       ctx.fillStyle = "#000";
       ctx.fillRect(0, 0, cw, ch);
 
-      // Fit preserving aspect ratio (letterbox).
-      const scale = Math.min(cw / img.width, ch / img.height);
-      const dw = img.width * scale;
-      const dh = img.height * scale;
-      const dx = (cw - dw) / 2;
-      const dy = (ch - dh) / 2;
-      ctx.drawImage(img, dx, dy, dw, dh);
+      // The same placement the H.264 path uses, so the two sources cannot
+      // disagree about where the image is.
+      const rect = computeFitRect(fitRef.current, img.width, img.height, cw, ch);
+      ctx.drawImage(img, rect.dx, rect.dy, rect.dw, rect.dh);
 
       // Publish the image rectangle so the control layer can map clicks onto
-      // the actual frame instead of the whole (letterboxed) canvas.
-      contentRectRef.current = { dx, dy, dw, dh };
+      // the actual frame instead of the whole canvas.
+      contentRectRef.current = rect;
 
       if (!revoked) {
         // The URL is owned by the connection hook, which revokes on replace;
@@ -174,6 +193,19 @@ export function ScreenView({
           >
             Video
           </button>
+        </div>
+        <div className="seg seg-sm fit-seg">
+          {FIT_MODES.map((m) => (
+            <button
+              key={m.value}
+              type="button"
+              className={fit === m.value ? "active" : ""}
+              onClick={() => onSetFit(m.value)}
+              title={m.hint}
+            >
+              {m.label}
+            </button>
+          ))}
         </div>
         {fullscreen && (
           <button

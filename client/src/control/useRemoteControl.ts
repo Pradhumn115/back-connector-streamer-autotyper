@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import type { ClientMessage } from "@bcsa/shared";
 import type { ContentRect } from "../view/ScreenView";
-import { mapToNormalized } from "./mapCoords";
+import { mapPointerToNormalized } from "./mapCoords";
 
 type Modifier = "ctrl" | "alt" | "shift" | "meta";
 type SendFn = (msg: ClientMessage) => void;
@@ -44,15 +44,24 @@ export function normalizedCoords(
   clientY: number,
 ): { x: number; y: number } {
   const rect = canvas.getBoundingClientRect();
-  // The canvas backing store is sized 1:1 with its CSS box, and the content
-  // rect is in those same units, so we can offset directly by the CSS rect.
-  return mapToNormalized(
-    clientX - rect.left,
-    clientY - rect.top,
-    content,
-    rect.width,
-    rect.height,
-  );
+  return mapPointerToNormalized(clientX, clientY, rect, backingStoreOf(canvas, rect), content);
+}
+
+/**
+ * The surface's pixel dimensions, falling back to its CSS box.
+ *
+ * Duck-typed rather than `instanceof HTMLCanvasElement`, which would throw a
+ * ReferenceError anywhere the DOM globals are absent.
+ */
+function backingStoreOf(
+  surface: ControlSurface,
+  rect: DOMRect,
+): { width: number; height: number } {
+  const { width, height } = surface as { width?: number; height?: number };
+  if (typeof width === "number" && typeof height === "number" && width > 0 && height > 0) {
+    return { width, height };
+  }
+  return { width: rect.width, height: rect.height };
 }
 
 /**

@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { DecodedFrame } from "@bcsa/shared";
+import { backingStoreSize, computeFitRect, type FitMode } from "./fit";
+import type { ContentRect } from "./ScreenView";
 
 /**
  * Decodes the agent's H.264 frames with WebCodecs and paints them to a canvas.
@@ -56,7 +58,13 @@ export interface UseH264Decoder {
  */
 const CODEC = "avc1.42E01F";
 
-export function useH264Decoder(canvasRef: React.RefObject<HTMLCanvasElement>): UseH264Decoder {
+export function useH264Decoder(
+  canvasRef: React.RefObject<HTMLCanvasElement>,
+  /** How the frame is laid out in the canvas; see fit.ts. */
+  fitRef?: React.MutableRefObject<FitMode>,
+  /** Written on each draw so the control layer can map clicks onto the image. */
+  contentRectRef?: React.MutableRefObject<ContentRect>,
+): UseH264Decoder {
   const [status, setStatus] = useState<H264Status>("idle");
   const [error, setError] = useState<string | null>(null);
   const [fps, setFps] = useState(0);
@@ -101,14 +109,40 @@ export function useH264Decoder(canvasRef: React.RefObject<HTMLCanvasElement>): U
       output: (frame) => {
         const canvas = canvasRef.current;
         if (canvas) {
-          // Size the canvas from the stream rather than assuming: the agent
-          // picks the encode size from the remote display's aspect ratio, and
-          // it changes if the encoder is reopened at a new resolution.
-          if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) {
-            canvas.width = frame.displayWidth;
-            canvas.height = frame.displayHeight;
+          // The canvas is sized from its own box, not from the stream. Sizing
+          // it to the frame and drawing at the origin left CSS to stretch the
+          // element to fit — which on a phone showed a 1.55-aspect desktop at
+          // 0.86, a 45% distortion. The frame is instead placed inside the box
+          // by the shared fit calculation, so the aspect ratio is preserved and
+          // the control layer's click mapping matches what is drawn.
+          const box = canvas.getBoundingClientRect();
+          const { width, height } = backingStoreSize(
+            box.width,
+            box.height,
+            frame.displayWidth,
+            frame.displayHeight,
+            globalThis.devicePixelRatio ?? 1,
+          );
+          if (canvas.width !== width || canvas.height !== height) {
+            canvas.width = width;
+            canvas.height = height;
           }
-          canvas.getContext("2d")?.drawImage(frame, 0, 0);
+          const ctx = canvas.getContext("2d");
+          if (ctx) {
+            const rect = computeFitRect(
+              fitRef?.current ?? "contain",
+              frame.displayWidth,
+              frame.displayHeight,
+              width,
+              height,
+            );
+            // Any mode that does not cover the box leaves margins, and stale
+            // pixels there would frame the picture with the previous frame.
+            ctx.fillStyle = "#000";
+            ctx.fillRect(0, 0, width, height);
+            ctx.drawImage(frame, rect.dx, rect.dy, rect.dw, rect.dh);
+            if (contentRectRef) contentRectRef.current = rect;
+          }
         }
         // VideoFrames hold GPU/system memory and are not garbage collected —
         // failing to close every one starves the decoder within seconds.

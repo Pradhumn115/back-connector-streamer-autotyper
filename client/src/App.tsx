@@ -7,6 +7,7 @@ import { useTouchControl } from "./control/useTouchControl";
 import { useSoftKeyboard } from "./control/useSoftKeyboard";
 import { ScreenView, intervalForMode, type ContentRect } from "./view/ScreenView";
 import { useFullscreen, useIdleChrome } from "./view/useFullscreen";
+import type { FitMode } from "./view/fit";
 import { useH264Decoder } from "./view/useH264Decoder";
 import { useWebtransport } from "./connect/useWebtransport";
 import { AutotypePanel } from "./autotype-panel/AutotypePanel";
@@ -29,7 +30,22 @@ export function App() {
   // H.264 frames bypass the image path entirely and go to a WebCodecs decoder
   // that paints straight onto the Classic canvas — same surface, same click
   // mapping, so remote control needs no special case for it.
-  const h264 = useH264Decoder(canvasRef);
+  /**
+   * How the remote screen is laid out in the view.
+   *
+   * Kept in both a state (to re-render the toolbar and redraw still frames) and
+   * a ref (because the decoder paints from a callback that outlives the render
+   * which created it, and would otherwise never see a change).
+   */
+  const [fit, setFit] = useState<FitMode>("contain");
+  const fitRef = useRef<FitMode>(fit);
+  fitRef.current = fit;
+
+  // The rectangle the frame occupies inside the canvas, shared between the view
+  // (which computes it) and the control layer (which maps clicks with it).
+  const contentRectRef = useRef<ContentRect>({ dx: 0, dy: 0, dw: 0, dh: 0 });
+
+  const h264 = useH264Decoder(canvasRef, fitRef, contentRectRef);
   // Video can arrive over QUIC instead of the control socket. Frames carry the
   // same envelope either way, so both feed the same decoder and the fallback is
   // invisible to everything downstream.
@@ -38,10 +54,6 @@ export function App() {
     onAudioFrame: audioTx.pushFrame,
     onVideoFrame: h264.pushFrame,
   });
-  // The letterbox rectangle the frame occupies inside the canvas, shared between
-  // the view (which computes it) and the control layer (which maps clicks with it).
-  const contentRectRef = useRef<ContentRect>({ dx: 0, dy: 0, dw: 0, dh: 0 });
-
   // Connect-bar form fields, seeded from cached params.
   const [lan, setLan] = useState<string>(conn.params.lanAddress);
   const [ts, setTs] = useState<string>(conn.params.tailscaleAddress);
@@ -289,6 +301,9 @@ export function App() {
             h264={{ active: h264.active, fps: h264.fps, status: h264.status, error: h264.error }}
             softKeyboard={softKeyboard}
             fullscreen={fullscreen}
+            fit={fit}
+            onSetFit={setFit}
+            fitRef={fitRef}
           />
         </main>
 
