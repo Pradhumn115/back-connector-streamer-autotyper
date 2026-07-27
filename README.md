@@ -158,14 +158,32 @@ npm run client       # starts Vite dev server (http://localhost:5173)
 
 In the client:
 
-1. Enter the agent's **LAN address** (e.g. `192.168.1.20:8443`) and, if you'll
+1. Enter the agent's **LAN address** (e.g. `192.168.0.119:8443`) and, if you'll
    connect remotely, its **Tailscale address** and/or **Tunnel host** too.
 2. Enter the **secret** from the agent banner.
-3. Connect. For LAN/Tailscale the browser warns about the self-signed
-   certificate the first time — that's expected; verify it matches the agent's
-   printed SHA-256 fingerprint, then proceed. (A Cloudflare Tunnel URL uses
-   Cloudflare's own trusted cert, so there's no warning to accept.) The client
-   tries LAN first, then Tailscale, then the tunnel.
+3. **Accept the agent's certificate first (LAN/Tailscale only).** Because the
+   agent uses a self-signed cert, a browser will *silently refuse* the `wss://`
+   connection until you've trusted it — and the WebSocket never shows a prompt.
+   So before connecting, open the agent directly in a new browser tab:
+
+   ```
+   https://192.168.0.119:8443       ← the agent's IP + port, single https://
+   ```
+
+   You'll get a "Your connection is not private" warning — click **Advanced →
+   Proceed / Continue** (in Chrome you can also just type `thisisunsafe`).
+   Optionally verify the cert's SHA-256 matches the agent banner. When it works
+   you'll see a **"✅ Agent reachable"** page — that confirms the cert is trusted
+   *and* that the address is reachable.
+4. Go back to the client and press **Connect**. It tries LAN first, then
+   Tailscale, then the tunnel. (A Cloudflare **Tunnel** URL uses Cloudflare's own
+   trusted cert, so it needs no cert-acceptance step — skip #3 for the tunnel.)
+
+> **If Connect just spins:** it's almost always the cert (step 3 not done for
+> that address) or the agent isn't reachable at that IP. Opening
+> `https://<agent-ip>:8443` in a tab tells you which: a cert warning → do step 3;
+> "can't reach this site" → wrong IP / network isolation (use the Ethernet or
+> Tailscale address instead).
 
 Then:
 
