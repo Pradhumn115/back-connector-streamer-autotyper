@@ -35,6 +35,8 @@ export interface ServerDeps {
   audio: AudioCapture;
   /** Detected display refresh rate (Hz), reported to the client for fps target. */
   refreshHz: number;
+  /** Human-readable capture engine actually in use, surfaced in diagnostics. */
+  captureKind?: string;
   /** ffmpeg args (input + RTP output) for the WebRTC video/audio relays. */
   webrtcFfmpegArgs: {
     /** Video args depend on which codec tier negotiation picked (see webrtc/codecs.ts). */
@@ -395,6 +397,7 @@ export class ConnectionServer {
     }
     const checks = runDiagnostics({
       refreshHz: this.deps.refreshHz,
+      captureKind: this.deps.captureKind,
       inputLockSupported: this.deps.inputLock.supported,
       audioSupported: this.deps.audio.supported,
       screenSize,

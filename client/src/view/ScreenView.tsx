@@ -322,7 +322,12 @@ export function ScreenView({
             className={transport === "webrtc" ? "active" : ""}
             onClick={() => onSetTransport("webrtc")}
             disabled={transportGateDisabled}
-            title={transportGateDisabled ? "Not available over Cloudflare Tunnel" : undefined}
+            title={
+              transportGateDisabled
+                ? "WebRTC needs a UDP path, which a Cloudflare Tunnel doesn't provide. " +
+                  "Classic still streams H.264 over the same WebSocket here."
+                : undefined
+            }
           >
             WebRTC
           </button>

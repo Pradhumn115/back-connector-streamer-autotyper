@@ -4,6 +4,13 @@ import { ffmpegAvailable } from "../capture/ffmpeg.js";
 import { isElevated } from "../inputlock/elevation.js";
 
 export interface DiagContext {
+  /**
+   * The capture engine actually selected at startup, as reported in the agent
+   * banner. Passed in rather than re-derived, so this panel cannot disagree
+   * with what is really running — it previously always claimed "ffmpeg
+   * pipeline" even when a different engine had been chosen.
+   */
+  captureKind?: string;
   /** Detected display refresh rate (Hz). */
   refreshHz: number;
   /** Whether the OS input-lock backend is implemented for this platform. */
@@ -48,11 +55,13 @@ export function runDiagnostics(ctx: DiagContext): DiagnosticCheck[] {
   checks.push({
     id: "capture-engine",
     label: "Screen capture engine",
-    status: hasFfmpeg ? "ok" : "warn",
-    detail: hasFfmpeg
-      ? `ffmpeg pipeline — targets ~${ctx.refreshHz}fps`
-      : "screenshot-desktop — a few fps only",
-    fix: hasFfmpeg ? undefined : "Install ffmpeg (see above) for high-fps video.",
+    status: ctx.captureKind?.startsWith("screenshot-desktop") ? "warn" : "ok",
+    detail:
+      ctx.captureKind ??
+      (hasFfmpeg ? `ffmpeg pipeline — targets ~${ctx.refreshHz}fps` : "screenshot-desktop"),
+    fix: ctx.captureKind?.startsWith("screenshot-desktop")
+      ? "Install ffmpeg (see above) for high-fps video."
+      : undefined,
   });
 
   checks.push(
@@ -61,7 +70,7 @@ export function runDiagnostics(ctx: DiagContext): DiagnosticCheck[] {
           id: "webrtc",
           label: "WebRTC transport (H.264 + Opus)",
           status: "ok",
-          detail: "ready (werift + ffmpeg RTP)",
+          detail: "ready (werift + ffmpeg RTP) — the H.264-over-WebSocket path does not need it",
         }
       : {
           id: "webrtc",

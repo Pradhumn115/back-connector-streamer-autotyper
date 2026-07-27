@@ -197,6 +197,7 @@ async function main(): Promise<void> {
     inputLock,
     audio,
     refreshHz,
+    captureKind,
     webrtcFfmpegArgs,
   });
 
