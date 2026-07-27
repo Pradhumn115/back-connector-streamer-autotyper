@@ -8,7 +8,7 @@ const HEADER_BYTES = 44;
  * take can be played back in an <audio> element.
  *
  * The pipeline's audio is already mono at a known sample rate (the agent
- * guarantees 16 kHz mono, and the WebRTC tap resamples to match), so this
+ * guarantees 16 kHz mono), so this
  * only ever writes single-channel PCM — enough for playback and for saving
  * a take to disk, without pulling in an encoder dependency.
  */

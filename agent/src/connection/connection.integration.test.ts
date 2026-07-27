@@ -70,13 +70,6 @@ function fakeInputLock(): InputLockManager {
   });
 }
 
-function fakeWebrtcFfmpegArgs(): { video: (port: number) => string[]; audio: (port: number) => string[] } {
-  return {
-    video: () => ["-f", "lavfi", "-i", "nullsrc", "-t", "0.1", "-f", "null", "-"],
-    audio: () => ["-f", "lavfi", "-i", "anullsrc", "-t", "0.1", "-f", "null", "-"],
-  };
-}
-
 async function startServer(
   secret: string,
   recorded: string[],
@@ -94,7 +87,6 @@ async function startServer(
     inputLock: fakeInputLock(),
     audio: new AudioCapture(null), // no loopback device -> supported:false, no ffmpeg
     refreshHz: 60,
-    webrtcFfmpegArgs: fakeWebrtcFfmpegArgs(),
     maxQueuedFrameBytes: opts.maxQueuedFrameBytes,
   });
   await server.listen();
@@ -174,121 +166,6 @@ test("rejects an invalid secret", async () => {
     assert.equal(result.ok, false);
     assert.equal(result.reason, "invalid secret");
   }
-  await server.close();
-});
-
-test("startWebrtc stops Classic capture (verified via stop-counter) and reports webrtcState", async () => {
-  const captureStopCalls = { count: 0 };
-  const server = await startServer("s3cret", [], { captureStopCalls });
-  const port = server.boundPort();
-
-  const ws = new WebSocket(`wss://127.0.0.1:${port}`, { rejectUnauthorized: false });
-  await once(ws, "open");
-
-  const infoPromise = nextMessage(ws, "agentInfo");
-  ws.send(encodeMessage({ type: "auth", secret: "s3cret" }));
-  await infoPromise;
-
-  assert.equal(captureStopCalls.count, 0);
-
-  const offerPromise = nextMessage(ws, "webrtcOffer");
-  ws.send(encodeMessage({ type: "startWebrtc" }));
-  const offerMsg = await offerPromise;
-  assert.equal(offerMsg.type, "webrtcOffer");
-  if (offerMsg.type === "webrtcOffer") {
-    assert.ok(offerMsg.sdp.startsWith("v=0"));
-  }
-  // handleStartWebrtc calls this.deps.capture.stop() to enforce mode
-  // exclusivity before creating the offer.
-  assert.equal(captureStopCalls.count, 1);
-
-  const statePromise = nextMessage(ws, "webrtcState");
-  ws.send(encodeMessage({ type: "stopWebrtc" }));
-  const stateMsg = await statePromise;
-  assert.equal(stateMsg.type, "webrtcState");
-  if (stateMsg.type === "webrtcState") {
-    assert.equal(stateMsg.active, false);
-  }
-
-  ws.close();
-  await server.close();
-});
-
-test("setAudio while WebRTC is active is rejected with agentError, not audioState", async () => {
-  const server = await startServer("s3cret", []);
-  const port = server.boundPort();
-
-  const ws = new WebSocket(`wss://127.0.0.1:${port}`, { rejectUnauthorized: false });
-  await once(ws, "open");
-
-  const infoPromise = nextMessage(ws, "agentInfo");
-  ws.send(encodeMessage({ type: "auth", secret: "s3cret" }));
-  await infoPromise;
-
-  const offerPromise = nextMessage(ws, "webrtcOffer");
-  ws.send(encodeMessage({ type: "startWebrtc" }));
-  await offerPromise;
-
-  const errorPromise = nextMessage(ws, "agentError");
-  ws.send(encodeMessage({ type: "setAudio", enabled: true }));
-  const errorMsg = await errorPromise;
-  assert.equal(errorMsg.type, "agentError");
-  if (errorMsg.type === "agentError") {
-    assert.match(errorMsg.message, /Classic audio is paused while WebRTC is active/);
-  }
-
-  // Prove no audioState (enabled:true) ever arrived for this request: race a
-  // short timer against a listener for that specific message.
-  let sawEnabledAudioState = false;
-  const onMsg = (data: WebSocket.RawData, isBinary: boolean) => {
-    if (isBinary) return;
-    const parsed = parseAgentMessage(data.toString());
-    if (parsed.type === "audioState" && parsed.enabled) sawEnabledAudioState = true;
-  };
-  ws.on("message", onMsg);
-  await new Promise((r) => setTimeout(r, 50));
-  ws.off("message", onMsg);
-  assert.equal(sawEnabledAudioState, false);
-
-  ws.close();
-  await server.close();
-});
-
-test("disconnecting during an active WebRTC session tears it down so a fresh connection can start clean", async () => {
-  const captureStopCalls = { count: 0 };
-  const server = await startServer("s3cret", [], { captureStopCalls });
-  const port = server.boundPort();
-
-  const ws1 = new WebSocket(`wss://127.0.0.1:${port}`, { rejectUnauthorized: false });
-  await once(ws1, "open");
-  const info1 = nextMessage(ws1, "agentInfo");
-  ws1.send(encodeMessage({ type: "auth", secret: "s3cret" }));
-  await info1;
-
-  const offer1 = nextMessage(ws1, "webrtcOffer");
-  ws1.send(encodeMessage({ type: "startWebrtc" }));
-  await offer1;
-
-  // Disconnect without an explicit stopWebrtc; the server's ws "close" handler
-  // must tear the session down (this.webrtc = null) so it doesn't linger.
-  ws1.close();
-  await new Promise((r) => setTimeout(r, 100));
-
-  // A fresh connection should be able to immediately start a new WebRTC
-  // session without hitting a stale-session issue (e.g. handleStartWebrtc's
-  // `if (this.webrtc) return` no-op guard).
-  const ws2 = new WebSocket(`wss://127.0.0.1:${port}`, { rejectUnauthorized: false });
-  await once(ws2, "open");
-  const info2 = nextMessage(ws2, "agentInfo");
-  ws2.send(encodeMessage({ type: "auth", secret: "s3cret" }));
-  await info2;
-
-  const offer2 = nextMessage(ws2, "webrtcOffer");
-  ws2.send(encodeMessage({ type: "startWebrtc" }));
-  const offerMsg2 = await offer2;
-  assert.equal(offerMsg2.type, "webrtcOffer");
-
-  ws2.close();
   await server.close();
 });
 

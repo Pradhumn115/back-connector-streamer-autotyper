@@ -10,7 +10,6 @@ import {
   parseClientMessage,
   type AgentMessage,
   type AutotypeProfile,
-  type VideoCodecPreference,
 } from "@bcsa/shared";
 import type { ScreenCapture } from "../capture/index.js";
 import type { AudioCapture } from "../audio/index.js";
@@ -18,8 +17,6 @@ import type { InputController } from "../input/index.js";
 import { runAutotype, type TypingBackend } from "../autotyper/index.js";
 import type { InputLockManager } from "../inputlock/index.js";
 import { runDiagnostics } from "../diagnostics/index.js";
-import { WebrtcSession } from "../webrtc/session.js";
-import { tiersForPreference, type VideoCodecTier } from "../webrtc/codecs.js";
 
 export interface ServerDeps {
   secret: string;
@@ -37,12 +34,6 @@ export interface ServerDeps {
   refreshHz: number;
   /** Human-readable capture engine actually in use, surfaced in diagnostics. */
   captureKind?: string;
-  /** ffmpeg args (input + RTP output) for the WebRTC video/audio relays. */
-  webrtcFfmpegArgs: {
-    /** Video args depend on which codec tier negotiation picked (see webrtc/codecs.ts). */
-    video: (tier: VideoCodecTier, port: number) => string[];
-    audio: (port: number) => string[];
-  };
   /**
    * Overrides the Classic backpressure threshold (see MAX_QUEUED_FRAME_BYTES).
    * Test-only escape hatch: a loopback socket drains far too fast to build a
@@ -91,8 +82,9 @@ function secretsMatch(provided: string, expected: string): boolean {
  * the instant a newer one exists, so dropping is strictly correct rather than a
  * compromise.
  *
- * The WebRTC path needs no equivalent -- congestion control is part of the
- * transport there.
+ * H.264 sends far less (measured ~7.4KB/frame against MJPEG's ~267KB), so
+ * this ceiling is reached rarely on that path — but it is what keeps a
+ * saturated link from queueing rather than dropping, on either codec.
  */
 const MAX_QUEUED_FRAME_BYTES = 512 * 1024;
 
@@ -111,7 +103,6 @@ export class ConnectionServer {
   private audioSeq = 0;
   private autotyping = false;
   private autotypeAbort: AbortController | null = null;
-  private webrtc: WebrtcSession | null = null;
   /** Frames dropped for backpressure since the last log line. */
   private droppedFrames = 0;
   private lastDropLogAt = 0;
@@ -157,8 +148,6 @@ export class ConnectionServer {
   async close(): Promise<void> {
     this.deps.capture.stop();
     this.deps.audio.stop();
-    this.webrtc?.close();
-    this.webrtc = null;
     await this.deps.inputLock.unlock();
     this.controller?.close();
     await new Promise<void>((resolve) => {
@@ -192,7 +181,7 @@ export class ConnectionServer {
     process.stderr.write(
       `[capture] link saturated — dropped ${dropped} frame(s), ` +
         `${(bufferedAmount / 1024).toFixed(0)}KB still queued. ` +
-        `Lower the frame rate or resolution, or use WebRTC, for a smoother stream.\n`,
+        `Lower the frame rate or resolution for a smoother stream.\n`,
     );
   }
 
@@ -243,8 +232,6 @@ export class ConnectionServer {
         this.autotypeAbort?.abort(); // stop any in-progress autotype
         this.deps.capture.stop();
         this.deps.audio.stop();
-        this.webrtc?.close();
-        this.webrtc = null;
         // Safety: never leave the agent's input locked with no controller.
         void this.deps.inputLock.unlock();
       }
@@ -290,11 +277,9 @@ export class ConnectionServer {
   }
 
   /**
-   * (Re)starts the Classic frame-capture loop with the standard forwarding
-   * callback. Used both on initial connect and to resume Classic capture
-   * after a WebRTC session stops it — `capture.start()` is idempotent-safe
-   * to call again (it just respawns ffmpeg), so this is also safe to call
-   * when capture is already running.
+   * (Re)starts the frame-capture loop with the standard forwarding callback.
+   * `capture.start()` is safe to call again (it just restarts the pipeline),
+   * so this can be called when capture is already running.
    */
   private startCapture(): void {
     this.deps.capture.start((image) => {
@@ -332,18 +317,7 @@ export class ConnectionServer {
     try {
       switch (msg.type) {
         case "setMode":
-          if (this.webrtc) {
-            this.send(ws, {
-              type: "agentError",
-              message: "Classic video is paused while WebRTC is active",
-            });
-            break;
-          }
-          // Switching back from WebRTC leaves capture stopped (handleStartWebrtc
-          // called capture.stop()); setInterval() alone only restarts ffmpeg
-          // when capture is already running (see FfmpegCapture.setInterval),
-          // so it silently no-ops here otherwise, leaving Classic mode dead
-          // until a full reconnect. Explicitly restart it.
+          // Capture may not be running yet on the first setMode; start it.
           this.startCapture();
           this.deps.capture.setInterval(msg.intervalMs);
           break;
@@ -370,15 +344,6 @@ export class ConnectionServer {
           break;
         case "runDiagnostics":
           await this.handleRunDiagnostics(ws);
-          break;
-        case "startWebrtc":
-          await this.handleStartWebrtc(ws, msg.videoCodec ?? "auto");
-          break;
-        case "stopWebrtc":
-          this.handleStopWebrtc(ws);
-          break;
-        case "webrtcAnswer":
-          await this.handleWebrtcAnswer(ws, msg.sdp);
           break;
         case "auth":
           break; // already authenticated; ignore duplicate
@@ -443,13 +408,6 @@ export class ConnectionServer {
    * If capture isn't supported, reports that honestly instead of a silent no-op.
    */
   private handleSetAudio(ws: WebSocket, enabled: boolean): void {
-    if (this.webrtc) {
-      this.send(ws, {
-        type: "agentError",
-        message: "Classic audio is paused while WebRTC is active",
-      });
-      return;
-    }
     if (enabled && !this.deps.audio.supported) {
       this.send(ws, {
         type: "agentError",
@@ -482,109 +440,6 @@ export class ConnectionServer {
       enabled,
       supported: this.deps.audio.supported,
     });
-  }
-
-  /**
-   * Start a WebRTC session: stop the Classic capture/audio pipelines (mode
-   * exclusivity — exactly one media pipeline runs at a time), create the
-   * offer, and send it to the client. Idempotent if already active.
-   */
-  private async handleStartWebrtc(
-    ws: WebSocket,
-    videoCodec: VideoCodecPreference,
-  ): Promise<void> {
-    if (this.webrtc) {
-      // Already active; idempotent, but still answer so a client that double-
-      // sent startWebrtc (e.g. a retry) doesn't wait forever for a response.
-      this.send(ws, { type: "webrtcState", active: true });
-      return;
-    }
-    // Same "unsupported" honesty as handleSetAudio's Classic-mode path: don't
-    // silently substitute the anullsrc fallback without telling the client.
-    // The session still starts (silence beats failing the whole session), but
-    // the client learns the audio track carries no real signal.
-    if (!this.deps.audio.supported) {
-      this.send(ws, {
-        type: "agentError",
-        message:
-          "WebRTC audio unavailable: no loopback device (install BlackHole/VB-Cable, see README); video will stream with silent audio",
-      });
-    }
-    // An explicit codec request that this agent cannot satisfy is reported
-    // rather than quietly downgraded to "auto": a client that pinned a codec
-    // did so for a reason, and silently offering a different one would make
-    // the very problem it was pinning around impossible to diagnose.
-    const videoTiers = tiersForPreference(videoCodec);
-    if (videoTiers.length === 0) {
-      this.send(ws, {
-        type: "webrtcState",
-        active: false,
-        error: `no video codec available for "${videoCodec}"`,
-      });
-      return;
-    }
-    this.deps.capture.stop();
-    this.deps.audio.stop();
-    const session: WebrtcSession = new WebrtcSession({
-      videoTiers,
-      videoFfmpegArgsFor: this.deps.webrtcFfmpegArgs.video,
-      audioFfmpegArgs: this.deps.webrtcFfmpegArgs.audio,
-      onStateChange: (active, error) => {
-        // Guard against a stale session's callback firing after it was
-        // replaced/dropped and a newer session (`this.webrtc`) took over.
-        if (this.webrtc !== session) return;
-        this.send(ws, { type: "webrtcState", active, error });
-        if (!active) {
-          session.close();
-          this.webrtc = null;
-        }
-      },
-    });
-    this.webrtc = session;
-    try {
-      const sdp = await session.createOffer();
-      this.send(ws, { type: "webrtcOffer", sdp });
-    } catch (err) {
-      this.send(ws, { type: "webrtcState", active: false, error: String(err) });
-      if (this.webrtc === session) {
-        session.close();
-        this.webrtc = null;
-      }
-    }
-  }
-
-  /**
-   * Stop the active WebRTC session (if any) and report the resulting state.
-   * WebrtcSession.close() doesn't itself fire onStateChange (a deliberate
-   * close isn't a failure), so this reports active:false explicitly instead
-   * of silently tearing the session down with no client-visible confirmation.
-   */
-  private handleStopWebrtc(ws: WebSocket): void {
-    if (!this.webrtc) {
-      // No active session; still answer so a client that double-sent
-      // stopWebrtc (or raced a stop with a server-side teardown) sees the
-      // authoritative state instead of waiting forever.
-      this.send(ws, { type: "webrtcState", active: false });
-      return;
-    }
-    this.webrtc.close();
-    this.webrtc = null;
-    this.send(ws, { type: "webrtcState", active: false });
-  }
-
-  private async handleWebrtcAnswer(ws: WebSocket, sdp: string): Promise<void> {
-    if (!this.webrtc) {
-      this.send(ws, {
-        type: "agentError",
-        message: "webrtcAnswer received with no active WebRTC session",
-      });
-      return;
-    }
-    try {
-      await this.webrtc.setAnswer(sdp);
-    } catch {
-      // onStateChange already reported the failure and cleared this.webrtc.
-    }
   }
 
   /** Push the current lock state to the connected controller, if any. */

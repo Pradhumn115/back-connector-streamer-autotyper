@@ -1,17 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import type { StreamMode, VideoCodecPreference } from "@bcsa/shared";
+import type { StreamMode } from "@bcsa/shared";
 import { useConnection } from "./connect/useConnection";
 import { useAudioTranscription } from "./audio/useAudioTranscription";
 import { useRemoteControl } from "./control/useRemoteControl";
-import { useWebrtcConnection } from "./webrtc/useWebrtcConnection";
-import { tapWebrtcAudioForTranscription } from "./webrtc/webrtcAudioTap";
 import { ScreenView, intervalForMode, type ContentRect } from "./view/ScreenView";
 import { useH264Decoder } from "./view/useH264Decoder";
 import { AutotypePanel } from "./autotype-panel/AutotypePanel";
 import { DiagnosticsPanel } from "./diagnostics/DiagnosticsPanel";
-
-/** Index into buildTargets()'s LAN/Tailscale/Tunnel order for the Tunnel target. */
-const TUNNEL_TARGET_INDEX = 2;
 
 /** Format elapsed milliseconds as M:SS for the record timer. */
 function fmtElapsed(ms: number): string {
@@ -24,27 +19,9 @@ function fmtElapsed(ms: number): string {
 export function App() {
   // Owns the Whisper worker; conn feeds it decoded audio frames.
   const audioTx = useAudioTranscription();
-  const webrtc = useWebrtcConnection();
-  const [transport, setTransport] = useState<"classic" | "webrtc">("classic");
-  // Holds an incoming WebRTC offer SDP until the effect below can answer it —
-  // conn isn't defined yet at the point onWebrtcOffer is declared, so we can't
-  // close over conn.sendWebrtcAnswer directly.
-  const [pendingOfferSdp, setPendingOfferSdp] = useState<string | null>(null);
-  /**
-   * Counts offers so a superseded one's answer is never sent.
-   *
-   * Answering is not instant — handleOffer waits for ICE gathering to complete
-   * before it can return an SDP. Anything that restarts the session meanwhile
-   * (switching codec, reconnecting) makes the agent tear down the session that
-   * offer belonged to and create a new one, so the late answer arrives for a
-   * session that no longer exists and the agent reports "webrtcAnswer received
-   * with no active WebRTC session" while the client falls back to Classic.
-   */
-  const offerGenerationRef = useRef(0);
   // Declared before useConnection because the H.264 decoder needs the canvas
   // and useConnection needs the decoder's pushFrame.
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const videoRef = useRef<HTMLVideoElement>(null);
   // H.264 frames bypass the image path entirely and go to a WebCodecs decoder
   // that paints straight onto the Classic canvas — same surface, same click
   // mapping, so remote control needs no special case for it.
@@ -52,8 +29,6 @@ export function App() {
   const conn = useConnection({
     onAudioFrame: audioTx.pushFrame,
     onVideoFrame: h264.pushFrame,
-    onWebrtcOffer: (sdp) => setPendingOfferSdp(sdp),
-    onWebrtcState: webrtc.handleAgentState,
   });
   // The letterbox rectangle the frame occupies inside the canvas, shared between
   // the view (which computes it) and the control layer (which maps clicks with it).
@@ -68,128 +43,23 @@ export function App() {
   const [mode, setMode] = useState<StreamMode>("screenshot");
   const [controlEnabled, setControlEnabled] = useState<boolean>(false);
   const [panelOpen, setPanelOpen] = useState<boolean>(true);
-  // Whether the WebRTC <video> element plays its audio track out loud.
-  // Defaults off so agent-side audio doesn't start blasting through the
-  // client's speakers the moment WebRTC connects; independent of
-  // transcription, which taps the same track separately regardless of this.
-  const [webrtcAudioEnabled, setWebrtcAudioEnabled] = useState<boolean>(false);
-  // Which video codec to ask the agent to offer. "auto" advertises every tier
-  // and lets the browser choose, which is usually right — but that choice is
-  // invisible, and being able to pin one turns a blank picture from guesswork
-  // into a two-click experiment (H.264 gets hardware decode where it exists;
-  // VP8 is mandatory for every WebRTC endpoint and is all some browsers have).
-  const [videoCodec, setVideoCodec] = useState<VideoCodecPreference>("auto");
 
-  // Wire mouse/keyboard to whichever surface is active for the current
-  // transport; gated by the control toggle. Control (mouse/keyboard/autotype/
-  // input-lock) behaves identically either way — only the rendering surface
-  // differs.
-  const activeSurfaceRef = transport === "webrtc" ? videoRef : canvasRef;
-  useRemoteControl(activeSurfaceRef, contentRectRef, conn.send, controlEnabled);
+  // Wire mouse/keyboard to the canvas, gated by the control toggle. Video of
+  // every kind lands on that one surface, so control needs no special case.
+  useRemoteControl(canvasRef, contentRectRef, conn.send, controlEnabled);
 
   const connected = conn.status === "connected";
 
   const refreshHz = conn.agentInfo?.refreshHz;
 
-  // Answer a pending WebRTC offer once conn (and thus sendWebrtcAnswer) exists.
-  useEffect(() => {
-    if (pendingOfferSdp === null) return;
-    const sdp = pendingOfferSdp;
-    setPendingOfferSdp(null);
-    const generation = ++offerGenerationRef.current;
-    void webrtc
-      .handleOffer(sdp)
-      .then((answer) => {
-        // A newer offer arrived while we were gathering ICE; this answer is for
-        // a session the agent has already replaced.
-        if (generation !== offerGenerationRef.current) return;
-        conn.sendWebrtcAnswer(answer);
-      })
-      .catch((err) => {
-        // handleOffer already records the failure in webrtc.status/error;
-        // this catch only prevents an unhandled promise rejection.
-        console.error("WebRTC offer handling failed:", err);
-      });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pendingOfferSdp]);
-
-  // A WebRTC session that comes up healthy retires any error from the previous
-  // one. Restarting a session (switching codec) can briefly surface an error
-  // about the session it replaced, which would otherwise sit on screen for the
-  // rest of the connection.
-  useEffect(() => {
-    if (webrtc.status === "connected") conn.clearError();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [webrtc.status]);
-
-  // No silent fallback: if WebRTC errors out, revert to Classic and surface
-  // the error (webrtc.error is already shown via ScreenView/hint text below).
-  // Critically, we must tell the agent to stop its WebRTC session *before*
-  // (or alongside) re-sending setMode: the agent rejects setMode with
-  // "Classic video is paused while WebRTC is active" while its WebRTC
-  // session is still up, which would otherwise leave Classic frozen/black
-  // even though the toggle says "Classic".
-  useEffect(() => {
-    if (transport === "webrtc" && webrtc.status === "error") {
-      conn.stopWebrtc();
-      setTransport("classic");
-      conn.send({ type: "setMode", mode, intervalMs: intervalForMode(mode, refreshHz) });
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [webrtc.status]);
-
-  // Tap the WebRTC audio track into the existing (unmodified) transcription
-  // pipeline whenever a stream is live, feeding the same pushFrame() the
-  // Classic PCM-over-WS path uses. Unlike Classic mode, WebRTC audio already
-  // flows continuously as part of the peer connection -- there's no agent-side
-  // start/stop signal to send, so the tap is unconditional whenever a stream
-  // exists. pushFrame() itself gates on audioTx's mode/liveActive/recording
-  // refs, so tapping while the user hasn't turned on transcription is a
-  // harmless no-op. This deliberately does NOT touch audioTx's mode/live/
-  // record state on entry or exit: whatever the user had going (live
-  // captions on, a recording in progress, or neither) carries straight
-  // through a transport switch instead of being forced then restored.
-  useEffect(() => {
-    if (transport !== "webrtc" || !webrtc.stream) return;
-    return tapWebrtcAudioForTranscription(webrtc.stream, audioTx.pushFrame);
-  }, [transport, webrtc.stream, audioTx.pushFrame]);
-
-  // On (re)connect, start whichever transport is currently selected, and
+  // On (re)connect, tell the agent the current mode so streaming starts, and
   // auto-run diagnostics once so the panel is populated without a manual press.
-  //
-  // This must branch on `transport`. It used to send setMode unconditionally --
-  // a Classic-only command -- so a connection established while the toggle
-  // already said WebRTC left the agent never once asked to open a session, and
-  // the video stayed blank. That is reachable in two ordinary ways, because
-  // useConnection's send() silently drops anything queued while the socket
-  // isn't OPEN and the WebRTC button is only disabled for Cloudflare Tunnel,
-  // not while disconnected:
-  //
-  //   1. Select WebRTC before pressing Connect. onSetTransport's startWebrtc()
-  //      is dropped on the closed socket, and nothing re-sends it afterwards.
-  //   2. Lose the connection while in WebRTC mode and let it reconnect. The
-  //      agent tore its session down; the client never asks for a new one.
-  //
-  // Both presented as "WebRTC just doesn't stream", with toggling to Classic
-  // and back as the only workaround -- that path runs onSetTransport with an
-  // open socket, which is what actually sent startWebrtc.
   useEffect(() => {
     if (!connected) return;
-    if (transport === "webrtc") {
-      // Same reset as onSetTransport: any peer connection from a previous
-      // session is dead once the control channel has dropped, and a stale
-      // "error" status would suppress the retry effect above.
-      webrtc.stop();
-      conn.startWebrtc(videoCodec);
-    } else {
-      conn.send({ type: "setMode", mode, intervalMs: intervalForMode(mode, refreshHz) });
-    }
+    conn.send({ type: "setMode", mode, intervalMs: intervalForMode(mode, refreshHz) });
     conn.runDiagnostics();
-    // Only fire on transition into connected; mode changes are handled by
-    // onSetMode and transport changes by onSetTransport, each sending its own
-    // message. `transport` is read but deliberately not a dependency -- this
-    // reads whichever transport was selected at the moment the connection came
-    // up, which is exactly what needs starting.
+    // Only fire on transition into connected; mode changes send their own
+    // setMode from onSetMode.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connected]);
 
@@ -207,81 +77,33 @@ export function App() {
     conn.send({ type: "setMode", mode: next, intervalMs: intervalForMode(next, refreshHz) });
   };
 
-  /**
-   * Changing codec mid-session means renegotiating, which the offer/answer flow
-   * only does from a fresh session — so the current one is torn down and a new
-   * one started with the new preference. Only meaningful while WebRTC is the
-   * active transport; otherwise the choice just applies next time it starts.
-   */
-  const onSetVideoCodec = (next: VideoCodecPreference) => {
-    if (next === videoCodec) return;
-    setVideoCodec(next);
-    if (transport !== "webrtc") return;
-    offerGenerationRef.current++;
-    conn.stopWebrtc();
-    webrtc.stop();
-    conn.startWebrtc(next);
-  };
-
-  const onSetTransport = (next: "classic" | "webrtc") => {
-    if (next === transport) return;
-    if (next === "webrtc") {
-      // Reset to a clean "idle" status before each attempt. Without this, a
-      // second identical failure leaves webrtc.status stuck at "error" (it
-      // never changes value), so the effect above — which only fires on a
-      // webrtc.status *transition* — never re-runs and the toggle stays
-      // stuck on WebRTC with a black surface.
-      webrtc.stop();
-      setTransport("webrtc");
-      conn.startWebrtc();
-    } else {
-      setTransport("classic");
-      conn.stopWebrtc();
-      webrtc.stop();
-      conn.send({ type: "setMode", mode, intervalMs: intervalForMode(mode, refreshHz) });
-      // Transcription state (live captions on, or a recording in progress)
-      // carries straight through the transport switch (see the WebRTC tap
-      // effect above), but the agent itself stopped pushing Classic PCM the
-      // moment WebRTC started (handleStartWebrtc() calls audio.stop()) and
-      // was never told to resume it -- WebRTC audio needed no such signal.
-      // Ask it to resume now, or the transcript would otherwise go silently
-      // dark on the way back to Classic.
-      if (audioTx.liveActive || audioTx.recording) conn.setAudio(true);
-    }
-  };
-
-  // Live captions: continuous, VAD-gated transcription. Under WebRTC, audio
-  // already flows continuously as part of the peer connection -- there's no
-  // agent-side stream to start/stop, and the agent actively rejects setAudio
-  // while a WebRTC session is active ("Classic audio is paused while WebRTC
-  // is active"), so that call only applies to Classic mode.
+  // Live captions: continuous, VAD-gated transcription. Audio always arrives
+  // as PCM over the WebSocket, so it is started and stopped unconditionally.
   const onToggleLive = (on: boolean) => {
     if (on) {
       audioTx.startLive();
-      if (transport === "classic") conn.setAudio(true);
+      conn.setAudio(true);
     } else {
-      if (transport === "classic") conn.setAudio(false);
+      conn.setAudio(false);
       audioTx.stopLive();
     }
   };
 
   // Record mode: buffer the take while recording; transcribe it on pause.
-  // Same Classic-only caveat as onToggleLive above.
   const onRecordToggle = () => {
     if (audioTx.recording) {
-      if (transport === "classic") conn.setAudio(false);
+      conn.setAudio(false);
       void audioTx.pauseRecording();
     } else {
       audioTx.startRecording();
-      if (transport === "classic") conn.setAudio(true);
+      conn.setAudio(true);
     }
   };
 
-  // Switching modes stops any active capture/transcription first. Same
-  // Classic-only caveat as onToggleLive/onRecordToggle above.
+  // Switching modes stops any active capture/transcription first.
   const onSwitchMode = (next: "live" | "record") => {
     if (next === audioTx.mode) return;
-    if (transport === "classic") conn.setAudio(false);
+    conn.setAudio(false);
     audioTx.setMode(next);
   };
 
@@ -402,12 +224,6 @@ export function App() {
             <span className="status-error">{conn.lastError}</span>
           </>
         )}
-        {webrtc.error && (
-          <>
-            <span className="status-sep">/</span>
-            <span className="status-error">WebRTC: {webrtc.error}</span>
-          </>
-        )}
       </div>
 
       <div className={`workspace ${panelOpen ? "" : "panel-closed"}`}>
@@ -420,18 +236,7 @@ export function App() {
             canvasRef={canvasRef}
             contentRectRef={contentRectRef}
             refreshHz={refreshHz}
-            transport={transport}
             h264={{ active: h264.active, fps: h264.fps, status: h264.status, error: h264.error }}
-            onSetTransport={onSetTransport}
-            videoCodec={videoCodec}
-            onSetVideoCodec={onSetVideoCodec}
-            transportGateDisabled={
-              !connected || conn.connectedTargetIndex === TUNNEL_TARGET_INDEX
-            }
-            webrtcStream={webrtc.stream}
-            videoRef={videoRef}
-            webrtcAudioEnabled={webrtcAudioEnabled}
-            onToggleWebrtcAudio={setWebrtcAudioEnabled}
           />
         </main>
 
@@ -612,15 +417,13 @@ export function App() {
             // Video reaches the canvas by three different routes, and only one
             // of them produces a `latestFrame`. Reporting on that alone told
             // the user "no frames yet" while the screen was visibly updating.
-            hasFrame={conn.latestFrame !== null || h264.active || webrtc.stream !== null}
+            hasFrame={conn.latestFrame !== null || h264.active}
             frameSource={
-              webrtc.stream !== null
-                ? "WebRTC"
-                : h264.active
-                  ? "H.264 over WebSocket"
-                  : conn.latestFrame !== null
-                    ? "Classic MJPEG"
-                    : undefined
+              h264.active
+                ? "H.264 over WebSocket"
+                : conn.latestFrame !== null
+                  ? "MJPEG"
+                  : undefined
             }
             diagnostics={conn.diagnostics}
             onRun={conn.runDiagnostics}

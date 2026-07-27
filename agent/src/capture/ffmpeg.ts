@@ -240,9 +240,8 @@ export function captureFilterPrefix(): string {
 
 /**
  * Per-OS screen-capture input args (`-f <format> ... -i <device>`), shared by
- * FfmpegCapture's MJPEG-over-pipe pipeline and the WebRTC RTP pipeline (see
- * agent/src/index.ts) — both grab the same screen, they only differ in the
- * encoder/output tail appended after this.
+ * FfmpegCapture's MJPEG-over-pipe pipeline — the H.264 path captures
+ * in-process instead (see capture/h264.ts) and does not use this.
  */
 export function screenCaptureInputArgs(fps: number): string[] {
   // Synthetic source for automated tests (BCSA_FAKE_CAPTURE=1).

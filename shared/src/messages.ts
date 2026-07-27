@@ -105,38 +105,6 @@ export const SetAudioMessage = z.object({
   enabled: z.boolean(),
 });
 
-/**
- * Which video codec the client wants the agent to offer.
- *
- * "auto" offers every tier and lets the browser pick, which is normally right:
- * negotiation is answerer's-choice and browsers know their own decoders. The
- * explicit options exist because that choice is invisible and occasionally
- * wrong — H.264 gets hardware decode where it exists, VP8 is mandatory for
- * every WebRTC endpoint and is the only thing some browsers (Firefox without
- * its OpenH264 plugin) can decode at all. Pinning one also makes a codec
- * problem diagnosable instead of guesswork.
- */
-export const VideoCodecPreference = z.enum(["auto", "h264", "vp8"]);
-export type VideoCodecPreference = z.infer<typeof VideoCodecPreference>;
-
-/** Ask the agent to open a WebRTC session (video + Opus audio) and send an offer. */
-export const StartWebrtcMessage = z.object({
-  type: z.literal("startWebrtc"),
-  /** Omitted by older clients; the agent treats that as "auto". */
-  videoCodec: VideoCodecPreference.optional(),
-});
-
-/** Ask the agent to tear down its WebRTC session, if any. */
-export const StopWebrtcMessage = z.object({
-  type: z.literal("stopWebrtc"),
-});
-
-/** The client's SDP answer to the agent's WebRTC offer. */
-export const WebrtcAnswerMessage = z.object({
-  type: z.literal("webrtcAnswer"),
-  sdp: z.string().min(1),
-});
-
 // ---- agent -> client ----
 
 export const AuthResultMessage = z.object({
@@ -215,23 +183,6 @@ export const AudioStateMessage = z.object({
   supported: z.boolean(),
 });
 
-/** The agent's SDP offer, sent once its WebRTC tracks are ready. */
-export const WebrtcOfferMessage = z.object({
-  type: z.literal("webrtcOffer"),
-  sdp: z.string().min(1),
-});
-
-/**
- * Reports the agent's WebRTC session state. Always reflects the true state,
- * including connection failures, so the client never shows an active session
- * that isn't really there (same honesty contract as audioState/inputLockState).
- */
-export const WebrtcStateMessage = z.object({
-  type: z.literal("webrtcState"),
-  active: z.boolean(),
-  error: z.string().optional(),
-});
-
 // ---- unions ----
 
 export const ClientMessage = z.discriminatedUnion("type", [
@@ -244,9 +195,6 @@ export const ClientMessage = z.discriminatedUnion("type", [
   SetInputLockMessage,
   SetAudioMessage,
   RunDiagnosticsMessage,
-  StartWebrtcMessage,
-  StopWebrtcMessage,
-  WebrtcAnswerMessage,
 ]);
 export type ClientMessage = z.infer<typeof ClientMessage>;
 
@@ -259,8 +207,6 @@ export const AgentMessage = z.discriminatedUnion("type", [
   InputLockStateMessage,
   AudioStateMessage,
   DiagnosticsMessage,
-  WebrtcOfferMessage,
-  WebrtcStateMessage,
 ]);
 export type AgentMessage = z.infer<typeof AgentMessage>;
 

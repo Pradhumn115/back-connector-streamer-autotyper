@@ -63,40 +63,9 @@ test("setMode enforces interval bounds", () => {
   }
 });
 
-test("parses startWebrtc / stopWebrtc", () => {
-  const start = parseClientMessage(JSON.stringify({ type: "startWebrtc" }));
-  assert.equal(start.type, "startWebrtc");
-  const stop = parseClientMessage(JSON.stringify({ type: "stopWebrtc" }));
-  assert.equal(stop.type, "stopWebrtc");
-});
-
-test("parses webrtcAnswer with sdp string", () => {
-  const msg = parseClientMessage(
-    JSON.stringify({ type: "webrtcAnswer", sdp: "v=0\r\n..." }),
-  );
-  assert.equal(msg.type, "webrtcAnswer");
-  if (msg.type === "webrtcAnswer") assert.equal(msg.sdp, "v=0\r\n...");
-});
-
 test("rejects webrtcAnswer with empty sdp", () => {
   assert.throws(() =>
     parseClientMessage(JSON.stringify({ type: "webrtcAnswer", sdp: "" })),
   );
 });
 
-test("parses webrtcOffer from agent", () => {
-  const msg = parseAgentMessage(
-    JSON.stringify({ type: "webrtcOffer", sdp: "v=0\r\n..." }),
-  );
-  assert.equal(msg.type, "webrtcOffer");
-});
-
-test("parses webrtcState with and without error", () => {
-  const ok = parseAgentMessage(JSON.stringify({ type: "webrtcState", active: true }));
-  assert.equal(ok.type, "webrtcState");
-  if (ok.type === "webrtcState") assert.equal(ok.active, true);
-  const failed = parseAgentMessage(
-    JSON.stringify({ type: "webrtcState", active: false, error: "ICE timed out" }),
-  );
-  if (failed.type === "webrtcState") assert.equal(failed.error, "ICE timed out");
-});

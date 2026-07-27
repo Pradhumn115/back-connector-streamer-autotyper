@@ -12,7 +12,6 @@ import {
   type DecodedAudioFrame,
   type DecodedFrame,
   type DiagnosticCheck,
-  type VideoCodecPreference,
 } from "@bcsa/shared";
 
 export type ConnectionStatus =
@@ -84,10 +83,6 @@ export interface UseConnectionOptions {
    * for a codec whose delta frames reference earlier ones.
    */
   onVideoFrame?: (frame: DecodedFrame) => void;
-  /** Called when the agent sends a WebRTC SDP offer. */
-  onWebrtcOffer?: (sdp: string) => void;
-  /** Called when the agent reports a change in WebRTC session state. */
-  onWebrtcState?: (active: boolean, error?: string) => void;
 }
 
 export interface DiagnosticsState {
@@ -114,11 +109,8 @@ export interface UseConnection {
   send: (msg: ClientMessage) => void;
   setAudio: (enabled: boolean) => void;
   runDiagnostics: () => void;
-  startWebrtc: (videoCodec?: VideoCodecPreference) => void;
   /** Retire the current error banner; used once a session comes up healthy. */
   clearError: () => void;
-  stopWebrtc: () => void;
-  sendWebrtcAnswer: (sdp: string) => void;
 }
 
 const STORAGE_KEY = "bcsa.connect";
@@ -227,10 +219,6 @@ export function useConnection(opts: UseConnectionOptions = {}): UseConnection {
   onAudioFrameRef.current = opts.onAudioFrame;
   const onVideoFrameRef = useRef(opts.onVideoFrame);
   onVideoFrameRef.current = opts.onVideoFrame;
-  const onWebrtcOfferRef = useRef(opts.onWebrtcOffer);
-  onWebrtcOfferRef.current = opts.onWebrtcOffer;
-  const onWebrtcStateRef = useRef(opts.onWebrtcState);
-  onWebrtcStateRef.current = opts.onWebrtcState;
   const [autotype, setAutotype] = useState<AutotypeStatus>({
     done: 0,
     total: 0,
@@ -360,12 +348,6 @@ export function useConnection(opts: UseConnectionOptions = {}): UseConnection {
         break;
       case "agentError":
         setLastError(msg.message);
-        break;
-      case "webrtcOffer":
-        onWebrtcOfferRef.current?.(msg.sdp);
-        break;
-      case "webrtcState":
-        onWebrtcStateRef.current?.(msg.active, msg.error);
         break;
     }
   }, []);
@@ -619,15 +601,6 @@ export function useConnection(opts: UseConnectionOptions = {}): UseConnection {
 
   const clearError = useCallback(() => setLastError(null), []);
 
-  const startWebrtc = useCallback(
-    (videoCodec?: VideoCodecPreference) => send({ type: "startWebrtc", videoCodec }),
-    [send],
-  );
-  const stopWebrtc = useCallback(() => send({ type: "stopWebrtc" }), [send]);
-  const sendWebrtcAnswer = useCallback(
-    (sdp: string) => send({ type: "webrtcAnswer", sdp }),
-    [send],
-  );
 
   // Clean up on unmount.
   useEffect(() => {
@@ -664,9 +637,6 @@ export function useConnection(opts: UseConnectionOptions = {}): UseConnection {
     send,
     setAudio,
     runDiagnostics,
-    startWebrtc,
-    stopWebrtc,
     clearError,
-    sendWebrtcAnswer,
   };
 }
