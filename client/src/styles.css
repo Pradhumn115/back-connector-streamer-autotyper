@@ -728,6 +728,12 @@ input[type="range"]::-moz-range-thumb {
   display: none;
 }
 
+/* Only the mobile bottom sheet needs dismissing; on desktop the panel is a
+   fixed column that covers nothing, and the toolbar toggle already hides it. */
+.panel-close {
+  display: none;
+}
+
 /* ---- Responsive ----------------------------------------------------------- */
 
 @media (max-width: 860px) {
@@ -773,12 +779,27 @@ input[type="range"]::-moz-range-thumb {
     display: flex;
     padding-bottom: max(18px, env(safe-area-inset-bottom));
   }
-  .panel::before {
-    content: "";
-    position: absolute;
-    top: 8px;
-    left: 50%;
-    transform: translateX(-50%);
+  /* The grab handle is a real button rather than a ::before decoration: it sits
+     exactly where a bottom sheet is expected to be dismissed from, so making it
+     look draggable without being tappable is worse than not drawing it. */
+  .panel-close {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 5px;
+    flex-shrink: 0;
+    width: 100%;
+    padding: 8px 0 10px;
+    margin-bottom: 2px;
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    color: var(--muted);
+  }
+  .panel-close-grip {
     width: 40px;
     height: 4px;
     border-radius: 2px;
@@ -800,7 +821,10 @@ input[type="range"]::-moz-range-thumb {
     position: fixed;
     right: 16px;
     bottom: max(16px, env(safe-area-inset-bottom));
-    z-index: 40;
+    /* Above the sheet (50), not below it. Underneath, the button that reads
+       "✕ Close" was covered by the very panel it closes — and since the panel
+       starts open, a phone landed in a state with no way out. */
+    z-index: 60;
     padding: 12px 18px;
     border-radius: 999px;
     border: 1px solid var(--line-strong);

@@ -49,7 +49,18 @@ export function App() {
 
   const [mode, setMode] = useState<StreamMode>("screenshot");
   const [controlEnabled, setControlEnabled] = useState<boolean>(false);
-  const [panelOpen, setPanelOpen] = useState<boolean>(true);
+  /**
+   * Open by default on desktop, closed on a phone.
+   *
+   * On desktop the panel is a column beside the screen view and costs nothing
+   * to leave open. On a phone it is a sheet covering most of the screen, so
+   * opening by default means the app starts by hiding the thing it exists to
+   * show — and the connect fields are in the top bar, not in here, so nothing
+   * about getting started needs it.
+   */
+  const [panelOpen, setPanelOpen] = useState<boolean>(
+    () => !globalThis.matchMedia?.("(max-width: 860px)").matches,
+  );
 
   // Wire mouse/keyboard to the canvas, gated by the control toggle. Video of
   // every kind lands on that one surface, so control needs no special case.
@@ -270,6 +281,18 @@ export function App() {
         </main>
 
         <aside className="panel">
+          {/* The sheet's own way out. The floating button is off at the screen
+              edge and easy to miss, so the sheet carries a close control of its
+              own, at the top where a bottom sheet is grabbed. Hidden on desktop,
+              where the panel is a fixed column that never covers anything. */}
+          <button
+            className="panel-close"
+            onClick={() => setPanelOpen(false)}
+            aria-label="Close controls"
+          >
+            <span className="panel-close-grip" />
+            <span className="panel-close-text">Close</span>
+          </button>
           <div className="card">
             <label className="switch">
               <input
