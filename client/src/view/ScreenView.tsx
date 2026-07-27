@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { StreamMode } from "@bcsa/shared";
+import type { StreamMode, VideoCodecPreference } from "@bcsa/shared";
 import type { LatestFrame } from "../connect/useConnection";
 
 /**
@@ -26,6 +26,9 @@ interface ScreenViewProps {
   refreshHz?: number;
   /** Which transport is active: Classic (JPEG/PCM over WS) or WebRTC. */
   transport: "classic" | "webrtc";
+  /** Video codec the agent is asked to offer; "auto" lets the browser choose. */
+  videoCodec: VideoCodecPreference;
+  onSetVideoCodec: (codec: VideoCodecPreference) => void;
   onSetTransport: (t: "classic" | "webrtc") => void;
   /** True when connected via the Cloudflare Tunnel target, where WebRTC isn't available. */
   transportGateDisabled: boolean;
@@ -84,6 +87,8 @@ export function ScreenView({
   contentRectRef,
   refreshHz,
   transport,
+  videoCodec,
+  onSetVideoCodec,
   onSetTransport,
   transportGateDisabled,
   webrtcStream,
@@ -314,6 +319,33 @@ export function ScreenView({
             WebRTC
           </button>
         </div>
+        {/*
+          Codec picker, shown only while WebRTC is active since it has no
+          meaning for Classic. "Auto" offers every codec and lets the browser
+          pick, which is normally right — the explicit choices exist because
+          that pick is invisible and occasionally wrong, and pinning one turns
+          a blank picture into a two-click experiment.
+        */}
+        {transport === "webrtc" && (
+          <div className="seg">
+            {(
+              [
+                ["auto", "Auto", "Offer every codec; the browser picks"],
+                ["h264", "H.264", "Hardware decode where available"],
+                ["vp8", "VP8", "Required by every WebRTC browser; the universal fallback"],
+              ] as const
+            ).map(([value, label, title]) => (
+              <button
+                key={value}
+                className={videoCodec === value ? "active" : ""}
+                onClick={() => onSetVideoCodec(value)}
+                title={title}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
         <div className="readout">
           {transport === "webrtc" ? (
             <>

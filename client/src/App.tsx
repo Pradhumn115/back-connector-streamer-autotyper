@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { StreamMode } from "@bcsa/shared";
+import type { StreamMode, VideoCodecPreference } from "@bcsa/shared";
 import { useConnection } from "./connect/useConnection";
 import { useAudioTranscription } from "./audio/useAudioTranscription";
 import { useRemoteControl } from "./control/useRemoteControl";
@@ -54,6 +54,12 @@ export function App() {
   // client's speakers the moment WebRTC connects; independent of
   // transcription, which taps the same track separately regardless of this.
   const [webrtcAudioEnabled, setWebrtcAudioEnabled] = useState<boolean>(false);
+  // Which video codec to ask the agent to offer. "auto" advertises every tier
+  // and lets the browser choose, which is usually right — but that choice is
+  // invisible, and being able to pin one turns a blank picture from guesswork
+  // into a two-click experiment (H.264 gets hardware decode where it exists;
+  // VP8 is mandatory for every WebRTC endpoint and is all some browsers have).
+  const [videoCodec, setVideoCodec] = useState<VideoCodecPreference>("auto");
 
   // Wire mouse/keyboard to whichever surface is active for the current
   // transport; gated by the control toggle. Control (mouse/keyboard/autotype/
@@ -140,7 +146,7 @@ export function App() {
       // session is dead once the control channel has dropped, and a stale
       // "error" status would suppress the retry effect above.
       webrtc.stop();
-      conn.startWebrtc();
+      conn.startWebrtc(videoCodec);
     } else {
       conn.send({ type: "setMode", mode, intervalMs: intervalForMode(mode, refreshHz) });
     }
@@ -165,6 +171,21 @@ export function App() {
   const onSetMode = (next: StreamMode) => {
     setMode(next);
     conn.send({ type: "setMode", mode: next, intervalMs: intervalForMode(next, refreshHz) });
+  };
+
+  /**
+   * Changing codec mid-session means renegotiating, which the offer/answer flow
+   * only does from a fresh session — so the current one is torn down and a new
+   * one started with the new preference. Only meaningful while WebRTC is the
+   * active transport; otherwise the choice just applies next time it starts.
+   */
+  const onSetVideoCodec = (next: VideoCodecPreference) => {
+    if (next === videoCodec) return;
+    setVideoCodec(next);
+    if (transport !== "webrtc") return;
+    conn.stopWebrtc();
+    webrtc.stop();
+    conn.startWebrtc(next);
   };
 
   const onSetTransport = (next: "classic" | "webrtc") => {
@@ -360,6 +381,8 @@ export function App() {
             refreshHz={refreshHz}
             transport={transport}
             onSetTransport={onSetTransport}
+            videoCodec={videoCodec}
+            onSetVideoCodec={onSetVideoCodec}
             transportGateDisabled={
               !connected || conn.connectedTargetIndex === TUNNEL_TARGET_INDEX
             }

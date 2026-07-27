@@ -60,16 +60,23 @@ import { captureFilterPrefix } from "../capture/ffmpeg.js";
  */
 export function buildVideoFilter(tier: VideoCodecTier): string {
   const fps = `fps=${tier.maxFps}`;
-  // P and r as they appear in the derivation above. `r` is written inline as
-  // (ih/iw) because ffmpeg expressions have no variable bindings.
-  const p = tier.maxMacroblocks * 256;
-  const r = "(ih/iw)";
-  const areaBound =
-    `(-15*(1+${r})+sqrt(225*pow(1+${r},2)+4*${r}*(${p}-225)))/(2*${r})`;
-  // A tier may also impose its own width cap; `iw` keeps this from upscaling a
+  // A tier may impose its own width cap; `iw` keeps this from upscaling a
   // source that is already smaller than either bound.
   const widthCap = tier.maxWidth === null ? "iw" : `min(${tier.maxWidth},iw)`;
-  const width = `trunc(min(${widthCap},${areaBound})/2)*2`;
+  // Codecs without levels (VP8) have no area constraint, so the width cap is
+  // the only bound and the quadratic below would be meaningless.
+  const bounded =
+    tier.maxMacroblocks === null
+      ? widthCap
+      : (() => {
+          // P and r as they appear in the derivation above. `r` is written
+          // inline as (ih/iw) because ffmpeg expressions have no variables.
+          const p = tier.maxMacroblocks * 256;
+          const r = "(ih/iw)";
+          const areaBound = `(-15*(1+${r})+sqrt(225*pow(1+${r},2)+4*${r}*(${p}-225)))/(2*${r})`;
+          return `min(${widthCap},${areaBound})`;
+        })();
+  const width = `trunc(${bounded}/2)*2`;
   // Prefixed (not appended): a hardware-frame capture backend has to be
   // downloaded to system memory before any of the above can run on it.
   return `${captureFilterPrefix()}${fps},scale=w='${width}':h=-2`;

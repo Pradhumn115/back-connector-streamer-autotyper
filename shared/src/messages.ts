@@ -105,9 +105,25 @@ export const SetAudioMessage = z.object({
   enabled: z.boolean(),
 });
 
-/** Ask the agent to open a WebRTC session (H264 video + Opus audio) and send an offer. */
+/**
+ * Which video codec the client wants the agent to offer.
+ *
+ * "auto" offers every tier and lets the browser pick, which is normally right:
+ * negotiation is answerer's-choice and browsers know their own decoders. The
+ * explicit options exist because that choice is invisible and occasionally
+ * wrong — H.264 gets hardware decode where it exists, VP8 is mandatory for
+ * every WebRTC endpoint and is the only thing some browsers (Firefox without
+ * its OpenH264 plugin) can decode at all. Pinning one also makes a codec
+ * problem diagnosable instead of guesswork.
+ */
+export const VideoCodecPreference = z.enum(["auto", "h264", "vp8"]);
+export type VideoCodecPreference = z.infer<typeof VideoCodecPreference>;
+
+/** Ask the agent to open a WebRTC session (video + Opus audio) and send an offer. */
 export const StartWebrtcMessage = z.object({
   type: z.literal("startWebrtc"),
+  /** Omitted by older clients; the agent treats that as "auto". */
+  videoCodec: VideoCodecPreference.optional(),
 });
 
 /** Ask the agent to tear down its WebRTC session, if any. */

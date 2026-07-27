@@ -10,6 +10,7 @@ import {
   parseClientMessage,
   type AgentMessage,
   type AutotypeProfile,
+  type VideoCodecPreference,
 } from "@bcsa/shared";
 import type { ScreenCapture } from "../capture/index.js";
 import type { AudioCapture } from "../audio/index.js";
@@ -18,7 +19,7 @@ import { runAutotype, type TypingBackend } from "../autotyper/index.js";
 import type { InputLockManager } from "../inputlock/index.js";
 import { runDiagnostics } from "../diagnostics/index.js";
 import { WebrtcSession } from "../webrtc/session.js";
-import type { VideoCodecTier } from "../webrtc/codecs.js";
+import { tiersForPreference, type VideoCodecTier } from "../webrtc/codecs.js";
 
 export interface ServerDeps {
   secret: string;
@@ -360,7 +361,7 @@ export class ConnectionServer {
           await this.handleRunDiagnostics(ws);
           break;
         case "startWebrtc":
-          await this.handleStartWebrtc(ws);
+          await this.handleStartWebrtc(ws, msg.videoCodec ?? "auto");
           break;
         case "stopWebrtc":
           this.handleStopWebrtc(ws);
@@ -476,7 +477,10 @@ export class ConnectionServer {
    * exclusivity — exactly one media pipeline runs at a time), create the
    * offer, and send it to the client. Idempotent if already active.
    */
-  private async handleStartWebrtc(ws: WebSocket): Promise<void> {
+  private async handleStartWebrtc(
+    ws: WebSocket,
+    videoCodec: VideoCodecPreference,
+  ): Promise<void> {
     if (this.webrtc) {
       // Already active; idempotent, but still answer so a client that double-
       // sent startWebrtc (e.g. a retry) doesn't wait forever for a response.
@@ -494,9 +498,23 @@ export class ConnectionServer {
           "WebRTC audio unavailable: no loopback device (install BlackHole/VB-Cable, see README); video will stream with silent audio",
       });
     }
+    // An explicit codec request that this agent cannot satisfy is reported
+    // rather than quietly downgraded to "auto": a client that pinned a codec
+    // did so for a reason, and silently offering a different one would make
+    // the very problem it was pinning around impossible to diagnose.
+    const videoTiers = tiersForPreference(videoCodec);
+    if (videoTiers.length === 0) {
+      this.send(ws, {
+        type: "webrtcState",
+        active: false,
+        error: `no video codec available for "${videoCodec}"`,
+      });
+      return;
+    }
     this.deps.capture.stop();
     this.deps.audio.stop();
     const session: WebrtcSession = new WebrtcSession({
+      videoTiers,
       videoFfmpegArgsFor: this.deps.webrtcFfmpegArgs.video,
       audioFfmpegArgs: this.deps.webrtcFfmpegArgs.audio,
       onStateChange: (active, error) => {

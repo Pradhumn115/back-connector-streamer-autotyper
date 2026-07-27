@@ -85,45 +85,15 @@ async function main(): Promise<void> {
       // Caps fps and guarantees even output dimensions — see buildVideoFilter
       // for why both matter (libx264/yuv420p rejects odd sizes outright).
       "-vf", buildVideoFilter(tier),
-      "-c:v", "libx264",
-      // Must stay in sync with the profile-level-id byte pair of this
-      // tier's codec in webrtc/codecs.ts (e.g. profile 0x64 = High, level
-      // 0x34 = level 5.2 for VIDEO_CODEC_HIGH).
-      "-profile:v", tier.ffmpegProfile,
-      "-level", tier.ffmpegLevel,
-      "-preset", "ultrafast",
-      "-tune", "zerolatency",
-      // One slice per frame. This is what actually made browsers decode.
+      // Encoder selection and tuning come from the tier, not from here.
       //
-      // `-tune zerolatency` turns ON x264's sliced-threads, which splits every
-      // frame into one slice per worker thread. Measured on the RTP output with
-      // the rest of these args unchanged: 90 frames produced ~700 slice NALs
-      // (~8 per frame, matching the core count), aggregated by ffmpeg's rtp
-      // muxer into STAP-A packets. With slicing off the same clip produces
-      // exactly one slice per frame and no aggregated slice packets at all.
-      //
-      // Browser WebRTC decoders handle multi-slice frames poorly -- the stream
-      // is well-formed (SPS/PPS in-band before every IDR, verified) and RTP
-      // flows normally, but nothing decodes, so the receiver just PLIs forever
-      // against a picture it can never build. Because the slice count follows
-      // the CPU's core count, this reproduced identically on every machine and
-      // looked like a platform-independent transport bug rather than an
-      // encoder setting.
-      //
-      // `-threads 1` rather than sliced-threads=0 alone: with slicing off but
-      // several threads, x264 switches to FRAME threading, which buys back
-      // throughput at the cost of a delay of `threads` frames -- about 130ms at
-      // 60fps, which a remote-desktop cannot spend. Single-threaded ultrafast
-      // measured 1.56s to encode 120 frames at 3456x2234, inside the 2.0s
-      // realtime budget for 60fps. sliced-threads=0 is set alongside it so the
-      // intent survives if the thread count is ever raised.
-      "-threads", "1",
-      // Per-tier, because it carries more than the slicing switch: it is also
-      // what forces the encoder to actually emit the profile this tier's SDP
-      // advertises. See VideoCodecTier.x264Params -- `-profile:v` below is
-      // only a ceiling and will silently let ultrafast emit Constrained
-      // Baseline under a High label, which no browser will decode.
-      "-x264-params", tier.x264Params,
+      // The tiers are no longer all H.264 — VP8 is offered as a universal
+      // fallback for clients with no H.264 decoder at all (Firefox), and it
+      // shares none of x264's profile/level/threading vocabulary. Anything
+      // hardcoded at this level would be wrong for one codec or the other.
+      // See VideoCodecTier.encoderArgs, which also carries the settings that
+      // make each encoder actually emit what its SDP advertises.
+      ...tier.encoderArgs,
       // Bounded GOP -- one IDR per second of output.
       //
       // `-tune zerolatency` leaves the keyframe interval effectively

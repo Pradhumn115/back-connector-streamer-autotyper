@@ -12,6 +12,7 @@ import {
   type DecodedAudioFrame,
   type DecodedFrame,
   type DiagnosticCheck,
+  type VideoCodecPreference,
 } from "@bcsa/shared";
 
 export type ConnectionStatus =
@@ -106,7 +107,7 @@ export interface UseConnection {
   send: (msg: ClientMessage) => void;
   setAudio: (enabled: boolean) => void;
   runDiagnostics: () => void;
-  startWebrtc: () => void;
+  startWebrtc: (videoCodec?: VideoCodecPreference) => void;
   stopWebrtc: () => void;
   sendWebrtcAnswer: (sdp: string) => void;
 }
@@ -561,7 +562,10 @@ export function useConnection(opts: UseConnectionOptions = {}): UseConnection {
     send({ type: "runDiagnostics" });
   }, [send]);
 
-  const startWebrtc = useCallback(() => send({ type: "startWebrtc" }), [send]);
+  const startWebrtc = useCallback(
+    (videoCodec?: VideoCodecPreference) => send({ type: "startWebrtc", videoCodec }),
+    [send],
+  );
   const stopWebrtc = useCallback(() => send({ type: "stopWebrtc" }), [send]);
   const sendWebrtcAnswer = useCallback(
     (sdp: string) => send({ type: "webrtcAnswer", sdp }),

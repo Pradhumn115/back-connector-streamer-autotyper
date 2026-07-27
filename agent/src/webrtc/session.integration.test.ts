@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { RTCPeerConnection } from "werift";
 import { WebrtcSession } from "./session.js";
-import { VIDEO_CODEC_TIERS, VIDEO_CODEC_BASELINE, AUDIO_CODEC } from "./codecs.js";
+import { VIDEO_CODEC_TIERS, VIDEO_CODEC_BASELINE, VIDEO_CODEC_VP8, AUDIO_CODEC } from "./codecs.js";
 
 /**
  * These tests spawn real ffmpeg processes (via RtpRelay) and real werift peer
@@ -167,15 +167,11 @@ test("createOffer's SDP declares Opus per RFC 7587 (rtpmap channels=2, fmtp ster
   assert.match(offerSdp, /a=fmtp:\d+ [^\r\n]*\bstereo=0\b/);
 });
 
-test("a browser that only supports the baseline tier still negotiates and gets baseline ffmpeg args", async (t) => {
-  const videoArgsCalls: Array<{ profile: string; level: string; maxWidth: number | null }> = [];
+test("a browser without VP8 still negotiates H.264 and gets that tier's ffmpeg args", async (t) => {
+  const videoArgsCalls: Array<{ label: string; maxWidth: number | null }> = [];
   const session = new WebrtcSession({
     videoFfmpegArgsFor: (tier) => {
-      videoArgsCalls.push({
-        profile: tier.ffmpegProfile,
-        level: tier.ffmpegLevel,
-        maxWidth: tier.maxWidth,
-      });
+      videoArgsCalls.push({ label: tier.label, maxWidth: tier.maxWidth });
       return ["-f", "lavfi", "-i", "nullsrc", "-f", "null", "-"];
     },
     audioFfmpegArgs: () => ["-f", "lavfi", "-i", "anullsrc", "-f", "null", "-"],
@@ -186,8 +182,8 @@ test("a browser that only supports the baseline tier still negotiates and gets b
   const offerSdp = await session.createOffer();
   // The offer lists both tiers; confirm both payload types actually appear
   // (i.e. this is a real multi-codec offer, not an accidental single one).
-  assert.match(offerSdp, /a=rtpmap:96 H264\/90000/);
   assert.match(offerSdp, /a=rtpmap:97 H264\/90000/);
+  assert.match(offerSdp, /a=rtpmap:98 VP8\/90000/);
 
   // Stand-in "browser" peer that generates a structurally/ICE-wise valid
   // answer. Its own `codecs` config doesn't actually matter here: werift's
@@ -210,16 +206,15 @@ test("a browser that only supports the baseline tier still negotiates and gets b
       "m=video 9 UDP/TLS/RTP/SAVPF 97",
     )
     .split("\r\n")
-    .filter((line) => !line.includes(":96 "))
+    .filter((line) => !line.includes(":98 "))
     .join("\r\n");
-  assert.doesNotMatch(baselineOnlyAnswerSdp, /:96 /, "test setup: 96 must be fully stripped");
+  assert.doesNotMatch(baselineOnlyAnswerSdp, /:98 /, "test setup: 98 must be fully stripped");
 
   await session.setAnswer(baselineOnlyAnswerSdp);
 
   assert.equal(videoArgsCalls.length, 1);
   assert.deepEqual(videoArgsCalls[0], {
-    profile: VIDEO_CODEC_BASELINE.ffmpegProfile,
-    level: VIDEO_CODEC_BASELINE.ffmpegLevel,
+    label: VIDEO_CODEC_BASELINE.label,
     maxWidth: VIDEO_CODEC_BASELINE.maxWidth,
   });
 });

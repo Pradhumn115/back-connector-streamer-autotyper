@@ -5,7 +5,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { rmSync } from "node:fs";
-import { VIDEO_CODEC_HIGH, VIDEO_CODEC_BASELINE, type VideoCodecTier } from "./codecs.js";
+import { VIDEO_CODEC_BASELINE, type VideoCodecTier } from "./codecs.js";
 import { ffmpegAvailable } from "../capture/ffmpeg.js";
 
 /**
@@ -18,20 +18,29 @@ import { ffmpegAvailable } from "../capture/ffmpeg.js";
  * alone; both are only visible in the encoded output.
  */
 
-/** Encoder options shared by both inspections; mirrors agent/src/index.ts. */
-function encoderArgs(tier: VideoCodecTier, o: { threads?: string; x264Params?: string }): string[] {
+/**
+ * Encoder options shared by both inspections; mirrors agent/src/index.ts.
+ *
+ * `override` replaces the tier's own encoder args wholesale, which the vacuity
+ * guards use to reproduce the original bugs on purpose.
+ */
+function encoderArgs(tier: VideoCodecTier, override?: string[]): string[] {
   return [
     "-pix_fmt", "yuv420p",
-    "-c:v", "libx264",
-    "-profile:v", tier.ffmpegProfile,
-    "-level", tier.ffmpegLevel,
-    "-preset", "ultrafast",
-    "-tune", "zerolatency",
-    "-threads", o.threads ?? "1",
-    "-x264-params", o.x264Params ?? tier.x264Params,
+    ...(override ?? tier.encoderArgs),
     "-g", String(tier.maxFps),
     "-b:v", `${tier.maxBitrateKbps}k`,
   ];
+}
+
+/** The x264 args this tier ships, with one parameter swapped out. */
+function withX264Params(tier: VideoCodecTier, params: string, threads = "1"): string[] {
+  const args = [...tier.encoderArgs];
+  const p = args.indexOf("-x264-params");
+  if (p >= 0) args[p + 1] = params;
+  const t = args.indexOf("-threads");
+  if (t >= 0) args[t + 1] = threads;
+  return args;
 }
 
 /** NAL types carried inside a STAP-A aggregation packet. */
@@ -57,10 +66,7 @@ interface StreamShape {
 }
 
 /** Encodes to RTP and reports the NAL structure of the packets produced. */
-function encodeAndInspect(
-  tier: VideoCodecTier,
-  o: { threads?: string; x264Params?: string } = {},
-): Promise<StreamShape> {
+function encodeAndInspect(tier: VideoCodecTier, override?: string[]): Promise<StreamShape> {
   return new Promise((resolve, reject) => {
     const socket = createSocket("udp4");
     const shape: StreamShape = { aggregatedSlices: 0, sawSps: false, sawPps: false, packets: 0 };
@@ -88,7 +94,7 @@ function encodeAndInspect(
           "-hide_banner", "-loglevel", "error",
           "-f", "lavfi", "-i", `testsrc=size=640x480:rate=${tier.maxFps}`,
           "-frames:v", "90",
-          ...encoderArgs(tier, o),
+          ...encoderArgs(tier, override),
           "-pkt_size", "1200",
           "-f", "rtp", `rtp://127.0.0.1:${port}`,
         ],
@@ -111,7 +117,7 @@ function encodeAndInspect(
 }
 
 /** Encodes to a file and returns what ffprobe says the bitstream actually is. */
-function encodedProfile(tier: VideoCodecTier, o: { x264Params?: string } = {}): string {
+function encodedProfile(tier: VideoCodecTier, override?: string[]): string {
   const out = join(tmpdir(), `bcsa-profile-${tier.codec.payloadType}-${process.pid}.mp4`);
   try {
     const enc = spawnSync(
@@ -120,7 +126,7 @@ function encodedProfile(tier: VideoCodecTier, o: { x264Params?: string } = {}): 
         "-hide_banner", "-loglevel", "error",
         "-f", "lavfi", "-i", `testsrc=size=640x480:rate=${tier.maxFps}`,
         "-frames:v", "30",
-        ...encoderArgs(tier, o),
+        ...encoderArgs(tier, override),
         "-y", out,
       ],
       { encoding: "utf8" },
@@ -144,14 +150,14 @@ function encodedProfile(tier: VideoCodecTier, o: { x264Params?: string } = {}): 
  */
 function advertisedProfileName(tier: VideoCodecTier): string {
   const id = /profile-level-id=([0-9a-fA-F]{6})/.exec(String(tier.codec.parameters))?.[1];
-  assert.ok(id, `tier ${tier.ffmpegProfile} has no profile-level-id`);
+  assert.ok(id, `tier ${tier.label} has no profile-level-id`);
   const idc = parseInt(id.slice(0, 2), 16);
   if (idc === 0x64) return "High";
   if (idc === 0x42) return "Constrained Baseline";
   throw new Error(`unhandled profile_idc 0x${idc.toString(16)}`);
 }
 
-for (const tier of [VIDEO_CODEC_HIGH, VIDEO_CODEC_BASELINE]) {
+for (const tier of [VIDEO_CODEC_BASELINE]) {
   /**
    * The encoded bitstream must declare the very profile the SDP promised.
    *
@@ -162,7 +168,7 @@ for (const tier of [VIDEO_CODEC_HIGH, VIDEO_CODEC_BASELINE]) {
    * The offer still advertised High (640034), the browser built a High decoder
    * on that promise, and then rejected every frame it received.
    */
-  test(`${tier.ffmpegProfile}/${tier.ffmpegLevel} encodes the profile its SDP advertises`, (t) => {
+  test(`${tier.label} encodes the profile its SDP advertises`, (t) => {
     if (!ffmpegAvailable()) {
       t.skip("ffmpeg not on PATH");
       return;
@@ -182,7 +188,7 @@ for (const tier of [VIDEO_CODEC_HIGH, VIDEO_CODEC_BASELINE]) {
    * into STAP-A packets — a whole-frame slice is far too big to aggregate and
    * is always fragmented into FU-A instead.
    */
-  test(`${tier.ffmpegProfile}/${tier.ffmpegLevel} encodes one slice per frame`, async (t) => {
+  test(`${tier.label} encodes one slice per frame`, async (t) => {
     if (!ffmpegAvailable()) {
       t.skip("ffmpeg not on PATH");
       return;
@@ -218,15 +224,11 @@ test("sanity: the pre-fix settings really do trip both assertions", (t) => {
   // Without cabac/8x8dct, ultrafast emits Constrained Baseline under the High
   // tier's High-profile SDP -- the mismatch that broke decoding everywhere.
   assert.equal(
-    encodedProfile(VIDEO_CODEC_HIGH, { x264Params: "sliced-threads=0" }),
+    encodedProfile(VIDEO_CODEC_BASELINE, withX264Params(VIDEO_CODEC_BASELINE, "sliced-threads=0")
+      .map((a) => (a === "baseline" ? "high" : a))),
     "Constrained Baseline",
-    "expected the pre-fix High tier to actually emit Constrained Baseline",
-  );
-  assert.notEqual(
-    "Constrained Baseline",
-    advertisedProfileName(VIDEO_CODEC_HIGH),
-    "the High tier must advertise something other than Constrained Baseline, " +
-      "or the check above proves nothing",
+    "asking libx264 for High while ultrafast is on still yields Constrained " +
+      "Baseline — `-profile:v` is a ceiling, not a floor",
   );
 });
 
@@ -237,10 +239,10 @@ test("sanity: sliced-threads (the old behaviour) is detectable", async (t) => {
   }
 
   // Slicing needs more than one thread to slice across, so this overrides both.
-  const shape = await encodeAndInspect(VIDEO_CODEC_HIGH, {
-    threads: "4",
-    x264Params: "sliced-threads=1:cabac=1:8x8dct=1",
-  });
+  const shape = await encodeAndInspect(
+    VIDEO_CODEC_BASELINE,
+    withX264Params(VIDEO_CODEC_BASELINE, "sliced-threads=1", "4"),
+  );
   if (shape.aggregatedSlices === 0) {
     t.skip("this machine/build did not slice; nothing to detect");
     return;

@@ -31,7 +31,19 @@ export default defineConfig({
   },
   projects: [
     { name: "chromium", use: { ...devices["Desktop Chrome"] } },
-    { name: "firefox", use: { ...devices["Desktop Firefox"] } },
+    {
+      name: "firefox",
+      use: {
+        ...devices["Desktop Firefox"],
+        // Firefox hides local IPs behind mDNS ".local" ICE candidates unless the
+        // page has been granted a media permission. This client is receive-only
+        // and never asks for one, so those candidates arrive unresolvable and
+        // ICE fails outright — the agent has no mDNS resolver. Disabling the
+        // obfuscation here isolates the codec path, which is what this suite is
+        // for; the underlying limitation is real and tracked separately.
+        firefoxUserPrefs: { "media.peerconnection.ice.obfuscate_host_addresses": false },
+      },
+    },
     { name: "webkit", use: { ...devices["Desktop Safari"] } },
   ],
 });

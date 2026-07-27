@@ -76,6 +76,12 @@ export interface WebrtcSessionDeps {
    * the production default; omit in real usage.
    */
   iceConnectTimeoutMs?: number;
+  /**
+   * Restricts which codec tiers the offer advertises. Defaults to all of them
+   * ("auto"), which is normally right — negotiation is answerer's-choice and a
+   * browser knows its own decoders. A client can narrow it to pin a codec.
+   */
+  videoTiers?: VideoCodecTier[];
 }
 
 /**
@@ -96,10 +102,13 @@ export class WebrtcSession {
   private failed = false;
   private readonly iceConnectTimeoutMs: number;
 
+  private readonly videoTiers: VideoCodecTier[];
+
   constructor(private readonly deps: WebrtcSessionDeps) {
+    this.videoTiers = deps.videoTiers?.length ? deps.videoTiers : VIDEO_CODEC_TIERS;
     this.iceConnectTimeoutMs = deps.iceConnectTimeoutMs ?? ICE_CONNECT_TIMEOUT_MS;
     this.pc = new RTCPeerConnection({
-      codecs: { video: VIDEO_CODEC_TIERS.map((tier) => tier.codec), audio: [AUDIO_CODEC] },
+      codecs: { video: this.videoTiers.map((tier) => tier.codec), audio: [AUDIO_CODEC] },
     });
     this.videoTrack = new MediaStreamTrack({ kind: "video" });
     this.audioTrack = new MediaStreamTrack({ kind: "audio" });
@@ -159,7 +168,7 @@ export class WebrtcSession {
     // setRemoteRTP directly) -- match its payloadType back to one of our
     // offered tiers to learn which one the browser actually picked.
     const negotiatedPayloadType = this.videoTransceiver.codecs[0]?.payloadType;
-    const tier = VIDEO_CODEC_TIERS.find((t) => t.codec.payloadType === negotiatedPayloadType);
+    const tier = this.videoTiers.find((t) => t.codec.payloadType === negotiatedPayloadType);
     if (!tier) {
       const err = `WebRTC setAnswer failed: no known video codec tier negotiated (payloadType=${String(negotiatedPayloadType)})`;
       this.reportFailure(err);
