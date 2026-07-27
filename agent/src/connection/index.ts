@@ -595,6 +595,10 @@ export class ConnectionServer {
     const checks = runDiagnostics({
       refreshHz: this.deps.refreshHz,
       captureKind: this.deps.captureKind,
+      videoEncoder: this.deps.capture.activeEncoder ?? null,
+      videoWidth: this.deps.capture.encodeWidth ?? null,
+      videoFps: this.deps.capture.encodeFps ?? null,
+      webtransportPort: this.deps.webtransport?.certHash ? this.deps.webtransport.port : null,
       inputLockSupported: this.deps.inputLock.supported,
       audioSupported: this.deps.audio.supported,
       screenSize,

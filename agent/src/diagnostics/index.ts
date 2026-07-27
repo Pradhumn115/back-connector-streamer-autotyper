@@ -11,6 +11,19 @@ export interface DiagContext {
    * pipeline" even when a different engine had been chosen.
    */
   captureKind?: string;
+  /** Encoder actually in use (h264_videotoolbox, libx264, ...), when known. */
+  videoEncoder?: string | null;
+  /** Current encode size and rate, which the adaptive controller may have changed. */
+  videoWidth?: number | null;
+  videoFps?: number | null;
+  /**
+   * The QUIC/WebTransport video listener's port, or null if it did not start.
+   *
+   * Reported because its absence is otherwise invisible: video silently falls
+   * back to the WebSocket, which works, so nothing tells the user they lost
+   * QUIC's loss tolerance until the picture stutters on a lossy link.
+   */
+  webtransportPort?: number | null;
   /** Detected display refresh rate (Hz). */
   refreshHz: number;
   /** Whether the OS input-lock backend is implemented for this platform. */
@@ -52,13 +65,37 @@ export function runDiagnostics(ctx: DiagContext): DiagnosticCheck[] {
         },
   );
 
+  checks.push(
+    ctx.webtransportPort
+      ? {
+          id: "video-transport",
+          label: "Video transport",
+          status: "ok",
+          detail: `QUIC on UDP ${ctx.webtransportPort}, with WebSocket fallback`,
+        }
+      : {
+          id: "video-transport",
+          label: "Video transport",
+          status: "warn",
+          detail: "WebSocket only — the QUIC listener did not start",
+          fix:
+            "Video still works. QUIC avoids TCP head-of-line blocking, which matters " +
+            "on a lossy link; check that UDP isn't blocked and the port is free.",
+        },
+  );
+
   checks.push({
     id: "capture-engine",
     label: "Screen capture engine",
     status: ctx.captureKind?.startsWith("screenshot-desktop") ? "warn" : "ok",
-    detail:
+    detail: [
       ctx.captureKind ??
-      (hasFfmpeg ? `ffmpeg pipeline — targets ~${ctx.refreshHz}fps` : "screenshot-desktop"),
+        (hasFfmpeg ? `ffmpeg pipeline — targets ~${ctx.refreshHz}fps` : "screenshot-desktop"),
+      ctx.videoEncoder ? `encoder ${ctx.videoEncoder}` : null,
+      ctx.videoWidth && ctx.videoFps ? `${ctx.videoWidth}px @ ${ctx.videoFps}fps` : null,
+    ]
+      .filter(Boolean)
+      .join(" · "),
     fix: ctx.captureKind?.startsWith("screenshot-desktop")
       ? "Install ffmpeg (see above) for high-fps video."
       : undefined,

@@ -42,6 +42,8 @@ export interface UseH264Decoder {
   fps: number;
   /** True once at least one frame has been decoded and painted. */
   active: boolean;
+  /** The codec string the decoder was configured with, once it exists. */
+  codec: string | null;
   /** Feed one decoded envelope; ignores non-H264 formats. */
   pushFrame: (frame: DecodedFrame) => void;
   reset: () => void;
@@ -163,5 +165,5 @@ export function useH264Decoder(canvasRef: React.RefObject<HTMLCanvasElement>): U
     [ensureDecoder],
   );
 
-  return { status, error, fps, active, pushFrame, reset };
+  return { status, error, fps, active, codec: status === "idle" ? null : CODEC, pushFrame, reset };
 }

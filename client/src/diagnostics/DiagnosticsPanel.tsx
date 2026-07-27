@@ -14,6 +14,17 @@ interface DiagnosticsPanelProps {
   hasFrame: boolean;
   /** Which source is producing them, for the detail line. */
   frameSource?: string;
+  /**
+   * What the video path is actually doing right now: transport in use, and the
+   * codec the decoder was configured with.
+   *
+   * Reported separately from the agent's own checks because only the client
+   * knows which transport WON. The agent can say QUIC is available; whether the
+   * browser managed to connect to it — and therefore whether frames are
+   * arriving over QUIC or over the WebSocket fallback — is visible only here,
+   * and the fallback is silent by design.
+   */
+  videoPath?: { transport: string; codec: string | null } | null;
   diagnostics: DiagnosticsState;
   onRun: () => void;
   /** Safe in-app auto-fix: retry the connection with the current fields. */
@@ -35,6 +46,7 @@ export function DiagnosticsPanel({
   connected,
   hasFrame,
   frameSource,
+  videoPath,
   diagnostics,
   onRun,
   onReconnect,
@@ -70,6 +82,18 @@ export function DiagnosticsPanel({
             ? "Pick Screenshot or Video mode. If it stays blank, run the checks below to inspect the agent's capture."
             : undefined,
         },
+    ...(videoPath
+      ? [
+          {
+            id: "video-path",
+            label: "Video path",
+            status: "ok" as const,
+            detail: videoPath.codec
+              ? `${videoPath.transport} · ${videoPath.codec}`
+              : videoPath.transport,
+          },
+        ]
+      : []),
     hasWebGPU
       ? { id: "gpu", label: "Browser GPU (transcription)", status: "ok", detail: "WebGPU available" }
       : {

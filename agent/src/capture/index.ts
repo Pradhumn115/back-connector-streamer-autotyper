@@ -41,6 +41,8 @@ export interface ScreenCapture {
    * text legible on a bad link.
    */
   setScale?(width: number, fps: number): void;
+  /** Encoder actually in use, when the engine has a choice to report. */
+  readonly activeEncoder?: string | null;
   /** Current encode width, for a controller stepping relative to it. */
   readonly encodeWidth?: number;
   /** Current encode frame rate. */

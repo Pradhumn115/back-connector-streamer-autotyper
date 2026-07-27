@@ -244,6 +244,49 @@ export class H264Capture implements ScreenCapture {
     if (this.running) void this.pump(++this.generation);
   }
 
+  /**
+   * Re-open at a smaller frame size and/or lower frame rate.
+   *
+   * The lever of last resort. Bitrate alone cannot rescue a link once it is at
+   * the floor: below roughly 400kbps there are not enough bits to describe this
+   * many pixels this often, and the picture turns to mush rather than degrading
+   * gracefully. Spending the remaining budget on fewer pixels or fewer frames
+   * is what keeps text legible on a bad link.
+   *
+   * Both move together because they trade against each other — halving the
+   * frame rate frees roughly what halving the pixel count does — and the
+   * controller decides the mix.
+   */
+  setScale(width: number, fps: number): void {
+    const w = Math.max(320, Math.trunc(width / 2) * 2);
+    const f = Math.min(60, Math.max(1, Math.round(fps)));
+    if (w === this.width && f === this.fps) return;
+    this.width = w;
+    this.fps = f;
+    if (this.running) void this.pump(++this.generation);
+  }
+
+  /**
+   * The encoder that actually opened (h264_videotoolbox, libx264, ...).
+   *
+   * Reported rather than assumed: candidates are tried in order and the first
+   * that opens wins, so nothing before runtime knows whether this machine ended
+   * up on hardware or software.
+   */
+  get activeEncoder(): string | null {
+    return this.encoderName;
+  }
+
+  /** Current encode width, so a controller can step relative to it. */
+  get encodeWidth(): number {
+    return this.width;
+  }
+
+  /** Current encode frame rate. */
+  get encodeFps(): number {
+    return this.fps;
+  }
+
   stop(): void {
     this.running = false;
     this.handler = null;

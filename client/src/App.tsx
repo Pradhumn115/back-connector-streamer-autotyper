@@ -440,6 +440,16 @@ export function App() {
             // of them produces a `latestFrame`. Reporting on that alone told
             // the user "no frames yet" while the screen was visibly updating.
             hasFrame={conn.latestFrame !== null || h264.active}
+            videoPath={
+              h264.active
+                ? {
+                    transport: wt.frames > 0 ? "QUIC (WebTransport)" : "WebSocket (TCP)",
+                    codec: h264.codec,
+                  }
+                : conn.latestFrame !== null
+                  ? { transport: "WebSocket (TCP)", codec: "MJPEG" }
+                  : null
+            }
             frameSource={
               h264.active
                 ? wt.frames > 0
