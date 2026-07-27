@@ -88,6 +88,7 @@ async function main(): Promise<void> {
     audio,
     refreshHz,
     captureKind,
+    initialBitrateKbps: 2500,
   });
 
   await server.listen();

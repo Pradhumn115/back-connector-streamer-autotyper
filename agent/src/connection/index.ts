@@ -34,6 +34,8 @@ export interface ServerDeps {
   refreshHz: number;
   /** Human-readable capture engine actually in use, surfaced in diagnostics. */
   captureKind?: string;
+  /** Starting point for the adaptive bitrate controller, in kbit/s. */
+  initialBitrateKbps?: number;
   /**
    * Overrides the Classic backpressure threshold (see MAX_QUEUED_FRAME_BYTES).
    * Test-only escape hatch: a loopback socket drains far too fast to build a
@@ -92,6 +94,33 @@ const MAX_QUEUED_FRAME_BYTES = 512 * 1024;
 const DROP_LOG_THROTTLE_MS = 5000;
 
 /**
+ * Bitrate bounds and step sizes for the adaptive controller below.
+ *
+ * The floor is chosen so a saturated link still carries a legible desktop
+ * rather than degrading to mush; the ceiling is what a good LAN can spend
+ * without the encoder becoming the limit. Steps are asymmetric on purpose:
+ * congestion is an emergency and should be answered immediately, while
+ * recovery should be cautious, because probing upward too eagerly re-creates
+ * the congestion that was just escaped.
+ */
+const BITRATE_MIN_KBPS = 400;
+const BITRATE_MAX_KBPS = 6000;
+const BITRATE_DOWN_FACTOR = 0.6;
+const BITRATE_UP_FACTOR = 1.15;
+
+/** How often the controller reconsiders the bitrate. */
+const ADAPT_INTERVAL_MS = 2000;
+
+/**
+ * Queue depth that counts as "the link is behind".
+ *
+ * Deliberately below MAX_QUEUED_FRAME_BYTES: by the time frames are being
+ * dropped the viewer has already seen the damage, so the controller reacts to
+ * the queue growing rather than waiting for it to overflow.
+ */
+const ADAPT_BACKLOG_BYTES = 192 * 1024;
+
+/**
  * The agent's WSS server. Accepts a single authenticated controller at a time,
  * streams screen frames to it, and applies its mouse/keyboard/autotype commands.
  */
@@ -106,6 +135,13 @@ export class ConnectionServer {
   /** Frames dropped for backpressure since the last log line. */
   private droppedFrames = 0;
   private lastDropLogAt = 0;
+  /** Current adaptive target; null until a capture engine that supports it starts. */
+  private bitrateKbps: number | null = null;
+  private adaptTimer: NodeJS.Timeout | null = null;
+  /** Worst queue depth seen since the last adaptation decision. */
+  private peakBacklog = 0;
+  /** Frames dropped since the last adaptation decision. */
+  private dropsSinceAdapt = 0;
 
   constructor(private readonly deps: ServerDeps) {}
 
@@ -146,6 +182,7 @@ export class ConnectionServer {
   }
 
   async close(): Promise<void> {
+    this.stopAdapting();
     this.deps.capture.stop();
     this.deps.audio.stop();
     await this.deps.inputLock.unlock();
@@ -162,6 +199,66 @@ export class ConnectionServer {
 
   private send(ws: WebSocket, msg: AgentMessage): void {
     if (ws.readyState === ws.OPEN) ws.send(encodeMessage(msg));
+  }
+
+  /**
+   * Adjusts encoder bitrate to what the link is actually carrying.
+   *
+   * The signal is the socket's own send queue. That is a real measurement of
+   * whether the far end is keeping up — unlike a fixed bitrate, which is a
+   * guess that is wrong in both directions: too high on a poor link (frames
+   * queue, then get dropped, and the picture stutters) and too low on a good
+   * one (bandwidth sits unused while the image stays soft).
+   *
+   * Down fast, up slow. Congestion is already hurting the viewer when it is
+   * detected, so it is answered in one large step; recovery probes gently,
+   * because climbing back too eagerly just re-creates the congestion. This is
+   * the same asymmetry TCP uses, for the same reason.
+   *
+   * Cheap enough to do continuously: reopening the encoder measures ~2.2ms,
+   * against ~300ms plus a capture-device reopen when the encoder was an ffmpeg
+   * subprocess — which is precisely why this was not worth attempting before.
+   */
+  private startAdapting(): void {
+    if (this.adaptTimer || !this.deps.capture.setBitrate) return;
+    this.bitrateKbps ??= this.deps.initialBitrateKbps ?? 2500;
+    this.adaptTimer = setInterval(() => {
+      const ws = this.controller;
+      if (!ws || ws.readyState !== ws.OPEN || this.bitrateKbps === null) return;
+
+      const backlog = Math.max(this.peakBacklog, ws.bufferedAmount);
+      const drops = this.dropsSinceAdapt;
+      this.peakBacklog = 0;
+      this.dropsSinceAdapt = 0;
+
+      const congested = drops > 0 || backlog > ADAPT_BACKLOG_BYTES;
+      const previous = this.bitrateKbps;
+      const next = congested
+        ? Math.max(BITRATE_MIN_KBPS, Math.round(previous * BITRATE_DOWN_FACTOR))
+        : Math.min(BITRATE_MAX_KBPS, Math.round(previous * BITRATE_UP_FACTOR));
+
+      // Ignore changes too small to matter: every adjustment reopens the
+      // encoder and emits a keyframe, which costs far more bytes than a 3%
+      // bitrate tweak would ever save.
+      if (Math.abs(next - previous) < previous * 0.1) return;
+
+      this.bitrateKbps = next;
+      this.deps.capture.setBitrate?.(next);
+      process.stderr.write(
+        `[adapt] ${previous} -> ${next} kbps ` +
+          `(${congested ? `backlog ${(backlog / 1024).toFixed(0)}KB, ${drops} dropped` : "link healthy"})\n`,
+      );
+    }, ADAPT_INTERVAL_MS);
+    this.adaptTimer.unref?.();
+  }
+
+  private stopAdapting(): void {
+    if (this.adaptTimer) {
+      clearInterval(this.adaptTimer);
+      this.adaptTimer = null;
+    }
+    this.peakBacklog = 0;
+    this.dropsSinceAdapt = 0;
   }
 
   /**
@@ -231,6 +328,7 @@ export class ConnectionServer {
         this.autotyping = false;
         this.autotypeAbort?.abort(); // stop any in-progress autotype
         this.deps.capture.stop();
+        this.stopAdapting();
         this.deps.audio.stop();
         // Safety: never leave the agent's input locked with no controller.
         void this.deps.inputLock.unlock();
@@ -282,6 +380,7 @@ export class ConnectionServer {
    * so this can be called when capture is already running.
    */
   private startCapture(): void {
+    this.startAdapting();
     this.deps.capture.start((image) => {
       const ws = this.controller;
       if (ws?.readyState !== ws?.OPEN || !ws) return;
@@ -290,8 +389,10 @@ export class ConnectionServer {
       // skipped too, not just the send: a frame that would only be dropped is
       // not worth the JPEG encode. See MAX_QUEUED_FRAME_BYTES for why an
       // unbounded queue here made Classic drift permanently behind real time.
+      if (ws.bufferedAmount > this.peakBacklog) this.peakBacklog = ws.bufferedAmount;
       if (ws.bufferedAmount > (this.deps.maxQueuedFrameBytes ?? MAX_QUEUED_FRAME_BYTES)) {
         this.droppedFrames++;
+        this.dropsSinceAdapt++;
         this.logDroppedFrames(ws.bufferedAmount);
         return;
       }

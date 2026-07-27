@@ -238,3 +238,59 @@ test("drops Classic frames instead of queueing them when the socket is behind", 
   ws.close();
   await server.close();
 });
+
+/**
+ * The adaptive controller must react to a congested link, not just to a
+ * configured number.
+ *
+ * A fixed bitrate is wrong in both directions: too high on a poor link, where
+ * frames queue and then get dropped and the picture stutters; too low on a good
+ * one, where bandwidth sits unused and the image stays soft. The signal used
+ * here is the socket's own send queue, which is a real measurement rather than
+ * a guess.
+ *
+ * Congestion is simulated by setting the drop threshold to -1, so every frame
+ * takes the backpressure path exactly as it would on a saturated link. The
+ * assertion is that the encoder's bitrate is actually driven DOWN — the whole
+ * point being that the agent stops sending more than the link can carry.
+ */
+test("lowers the encoder bitrate when the link is congested", async () => {
+  const bitrates: number[] = [];
+  const capture = fakeCapture();
+  // The MJPEG fakes have no bitrate; give this one the H.264 engine's hook.
+  (capture as unknown as { setBitrate: (k: number) => void }).setBitrate = (kbps) =>
+    bitrates.push(kbps);
+
+  const server = new ConnectionServer({
+    secret: "s3cret",
+    nickname: "test-agent",
+    port: 0,
+    host: "127.0.0.1",
+    tls: ephemeralTls(),
+    input: fakeInput([]),
+    capture,
+    typingBackend: fakeTyping(),
+    inputLock: fakeInputLock(),
+    audio: new AudioCapture(null),
+    refreshHz: 60,
+    maxQueuedFrameBytes: -1, // every frame is "behind"; simulates saturation
+    initialBitrateKbps: 2500,
+  });
+  await server.listen();
+  const ws = new WebSocket(`wss://127.0.0.1:${server.boundPort()}`, { rejectUnauthorized: false });
+  await once(ws, "open");
+  const info = nextMessage(ws, "agentInfo");
+  ws.send(encodeMessage({ type: "auth", secret: "s3cret" }));
+  await info;
+
+  // Two adaptation intervals, so a single step cannot be a coincidence.
+  await new Promise((r) => setTimeout(r, 5000));
+  ws.close();
+  await server.close();
+
+  assert.ok(bitrates.length > 0, "expected the controller to adjust the bitrate at all");
+  assert.ok(
+    bitrates[bitrates.length - 1] < 2500,
+    `expected congestion to lower the bitrate below 2500, got ${JSON.stringify(bitrates)}`,
+  );
+});

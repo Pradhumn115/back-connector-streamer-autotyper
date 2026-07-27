@@ -22,6 +22,15 @@ export type FrameHandler = (image: CapturedImage) => void;
  */
 export interface ScreenCapture {
   start(handler: FrameHandler): void;
+  /**
+   * Change the encoder's target bitrate, if this engine has one.
+   *
+   * Optional because the MJPEG engines have no bitrate to set — their size per
+   * frame follows the JPEG quality setting, not a rate target. Implemented by
+   * the H.264 engine, where reopening the encoder costs ~2.2ms and is what
+   * makes continuous adaptation practical.
+   */
+  setBitrate?(kbps: number): void;
   /** Set the desired cadence; interpreted as an interval (ms) between frames. */
   setInterval(ms: number): void;
   stop(): void;
