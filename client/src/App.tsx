@@ -3,6 +3,8 @@ import type { StreamMode } from "@bcsa/shared";
 import { useConnection } from "./connect/useConnection";
 import { useAudioTranscription } from "./audio/useAudioTranscription";
 import { useRemoteControl } from "./control/useRemoteControl";
+import { useTouchControl } from "./control/useTouchControl";
+import { useSoftKeyboard } from "./control/useSoftKeyboard";
 import { ScreenView, intervalForMode, type ContentRect } from "./view/ScreenView";
 import { useH264Decoder } from "./view/useH264Decoder";
 import { useWebtransport } from "./connect/useWebtransport";
@@ -52,6 +54,10 @@ export function App() {
   // Wire mouse/keyboard to the canvas, gated by the control toggle. Video of
   // every kind lands on that one surface, so control needs no special case.
   useRemoteControl(canvasRef, contentRectRef, conn.send, controlEnabled);
+  // Touch gestures and the on-screen keyboard are the mobile equivalents of the
+  // two halves above: a canvas gets neither for free.
+  const softKeyboard = useSoftKeyboard(conn.send, controlEnabled);
+  useTouchControl(canvasRef, contentRectRef, conn.send, controlEnabled, softKeyboard.show);
 
   const connected = conn.status === "connected";
 
@@ -259,6 +265,7 @@ export function App() {
             contentRectRef={contentRectRef}
             refreshHz={refreshHz}
             h264={{ active: h264.active, fps: h264.fps, status: h264.status, error: h264.error }}
+            softKeyboard={softKeyboard}
           />
         </main>
 

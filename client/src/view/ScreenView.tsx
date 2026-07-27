@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { StreamMode } from "@bcsa/shared";
 import type { LatestFrame } from "../connect/useConnection";
+import type { UseSoftKeyboard } from "../control/useSoftKeyboard";
 
 /**
  * The rectangle (in canvas/CSS pixels) the letterboxed frame actually occupies
@@ -31,6 +32,12 @@ interface ScreenViewProps {
    * arrivals, would report a working stream as dead.
    */
   h264: { active: boolean; fps: number; status: string; error: string | null };
+  /**
+   * The on-screen keyboard bridge, on touch devices. Rendered here rather than
+   * alongside the canvas in App so the input sits inside the same stacking
+   * context — a focused input outside it would scroll the page to reach itself.
+   */
+  softKeyboard?: UseSoftKeyboard;
 }
 
 // Interval used for each mode (matches guidance in the protocol notes).
@@ -81,6 +88,7 @@ export function ScreenView({
   contentRectRef,
   refreshHz,
   h264,
+  softKeyboard,
 }: ScreenViewProps) {
   const targetFps = Math.min(MAX_FPS, Math.max(1, Math.round(refreshHz ?? 60)));
   const [fps, setFps] = useState<number>(0);
@@ -196,6 +204,38 @@ export function ScreenView({
           tabIndex={0}
           className={controlEnabled ? "canvas controllable" : "canvas"}
         />
+        {softKeyboard && (
+          <input
+            ref={softKeyboard.ref}
+            className="soft-keyboard-input"
+            // Every assist would corrupt the keystrokes: autocorrect rewrites
+            // what was typed, autocapitalize changes case, and a spellcheck
+            // underline implies text is being composed here when it is not.
+            autoCapitalize="none"
+            autoCorrect="off"
+            autoComplete="off"
+            spellCheck={false}
+            aria-label="Remote keyboard input"
+            tabIndex={-1}
+            onFocus={softKeyboard.handlers.onFocus}
+            onBlur={softKeyboard.handlers.onBlur}
+          />
+        )}
+        {softKeyboard && controlEnabled && (
+          <button
+            type="button"
+            className={`kbd-toggle ${softKeyboard.open ? "active" : ""}`}
+            // Pointer-down, not click: a click would land after the input has
+            // already lost focus, so the keyboard would close and reopen.
+            onPointerDown={(e) => {
+              e.preventDefault();
+              softKeyboard.open ? softKeyboard.hide() : softKeyboard.show();
+            }}
+            aria-label={softKeyboard.open ? "Hide keyboard" : "Show keyboard"}
+          >
+            ⌨
+          </button>
+        )}
         {!frame && !h264.active && (
           <div className="canvas-empty">
             {h264.status === "unsupported"

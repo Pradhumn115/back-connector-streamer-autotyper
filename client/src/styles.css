@@ -397,6 +397,63 @@ body::after {
 }
 .canvas.controllable {
   cursor: crosshair;
+  /* The gestures ARE the input, so the browser must not claim them for panning
+     or pinch-zoom. Without this a drag scrolls the page instead of the remote
+     cursor, and touchmove's preventDefault is ignored on a passive-by-default
+     scroll gesture. */
+  touch-action: none;
+}
+
+/* The input exists only to make a mobile OS raise its keyboard — a canvas is
+   not editable, so nothing else here can. It must stay focusable and non-zero
+   sized (display:none or visibility:hidden cannot take focus, and iOS ignores
+   a zero-sized field), so it is instead made invisible and placed out of the
+   way. */
+.soft-keyboard-input {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  background: transparent;
+  color: transparent;
+  caret-color: transparent;
+  /* Under 16px, iOS Safari zooms the page when the field takes focus. */
+  font-size: 16px;
+  pointer-events: none;
+}
+
+/* Shows the keyboard without needing a tap on the screen — which would also
+   click the remote machine, sometimes somewhere costly. */
+.kbd-toggle {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  width: 44px;
+  height: 44px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  font-size: 19px;
+  line-height: 1;
+  border-radius: 12px;
+  border: 1px solid var(--line-strong);
+  background: rgba(10, 12, 16, 0.85);
+  color: var(--text);
+  backdrop-filter: blur(8px);
+  cursor: pointer;
+  z-index: 5;
+}
+.kbd-toggle.active {
+  border-color: rgba(70, 224, 160, 0.5);
+  color: var(--live);
+}
+/* Only where there is no real keyboard to begin with. */
+@media (pointer: coarse) {
+  .kbd-toggle { display: flex; }
 }
 .canvas-wrap.is-controlling {
   border-color: rgba(70, 224, 160, 0.5);
@@ -761,6 +818,43 @@ input[type="range"]::-moz-range-thumb {
 
 @media (min-width: 861px) {
   .panel-fab { display: none; }
+}
+
+/* ---- Touch sizing ---------------------------------------------------------
+   Keyed on the input device rather than the screen width, because the problem
+   is the finger, not the viewport: a small window on a laptop still has a
+   precise pointer and should stay as dense as it is, while a tablet in
+   landscape is wide and still needs 44px targets. */
+@media (pointer: coarse) {
+  .field-input,
+  .btn {
+    min-height: 44px;
+  }
+  .seg button {
+    min-height: 40px;
+    padding: 8px 16px;
+  }
+  .seg.seg-sm button {
+    min-height: 36px;
+  }
+  .btn-mini {
+    min-height: 34px;
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+  /* The track stays 40x22 — its knob offset is a fixed translate, so resizing
+     it would leave the knob short of the end. The label around it is what
+     grows into a comfortable target. */
+  .switch {
+    min-height: 44px;
+    align-items: center;
+  }
+  /* iOS zooms the page whenever a focused field is under 16px. */
+  input,
+  textarea,
+  select {
+    font-size: max(16px, 1em);
+  }
 }
 
 /* Reduce motion for users who prefer it. */

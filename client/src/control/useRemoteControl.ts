@@ -37,7 +37,7 @@ function collectModifiers(e: KeyboardEvent): Modifier[] {
  * ScreenView — not the whole canvas — otherwise clicks are offset and mis-scaled
  * whenever the screen's aspect ratio differs from the canvas's.
  */
-function normalizedCoords(
+export function normalizedCoords(
   canvas: ControlSurface,
   content: ContentRect,
   clientX: number,
