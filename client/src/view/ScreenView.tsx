@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { StreamMode } from "@bcsa/shared";
 import type { LatestFrame } from "../connect/useConnection";
 import type { UseSoftKeyboard } from "../control/useSoftKeyboard";
+import type { UseFullscreen } from "./useFullscreen";
 
 /**
  * The rectangle (in canvas/CSS pixels) the letterboxed frame actually occupies
@@ -38,6 +39,8 @@ interface ScreenViewProps {
    * context — a focused input outside it would scroll the page to reach itself.
    */
   softKeyboard?: UseSoftKeyboard;
+  /** Fills the display with the screen view; see useFullscreen. */
+  fullscreen?: UseFullscreen;
 }
 
 // Interval used for each mode (matches guidance in the protocol notes).
@@ -89,6 +92,7 @@ export function ScreenView({
   refreshHz,
   h264,
   softKeyboard,
+  fullscreen,
 }: ScreenViewProps) {
   const targetFps = Math.min(MAX_FPS, Math.max(1, Math.round(refreshHz ?? 60)));
   const [fps, setFps] = useState<number>(0);
@@ -171,6 +175,17 @@ export function ScreenView({
             Video
           </button>
         </div>
+        {fullscreen && (
+          <button
+            type="button"
+            className={`btn btn-ghost fs-toggle ${fullscreen.active ? "active" : ""}`}
+            onClick={fullscreen.toggle}
+            title={fullscreen.active ? "Exit full screen" : "Full screen"}
+            aria-label={fullscreen.active ? "Exit full screen" : "Full screen"}
+          >
+            {fullscreen.active ? "⤡ Exit" : "⤢ Full screen"}
+          </button>
+        )}
         <div className="readout">
           <>
               <span>

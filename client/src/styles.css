@@ -844,6 +844,97 @@ input[type="range"]::-moz-range-thumb {
   .panel-fab { display: none; }
 }
 
+/* ---- Full screen ----------------------------------------------------------
+   Applied in both modes: with the real Fullscreen API, and on its own where
+   that API cannot be used (iOS Safari refuses fullscreen for anything but a
+   <video>, and the view here is a canvas). The rules are the same either way —
+   the difference is only whether the browser's own UI also goes away. */
+
+.app.immersive .topbar,
+.app.immersive .status-strip {
+  display: none;
+}
+
+.app.immersive .workspace,
+.app.immersive .workspace.panel-closed {
+  grid-template-columns: 1fr;
+}
+
+.app.immersive .stage {
+  position: fixed;
+  inset: 0;
+  padding: 0;
+  gap: 0;
+  z-index: 100;
+  background: #000;
+}
+
+/* The frame should meet the edges of the display: a rounded, inset, shadowed
+   card is right in a window and wrong when it IS the window. */
+.app.immersive .canvas-wrap {
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+/* The toolbar stops being a row above the picture and becomes an overlay on
+   top of it, so the picture keeps the full height. */
+.app.immersive .stage-toolbar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 110;
+  padding: 10px max(14px, env(safe-area-inset-right)) 22px
+    max(14px, env(safe-area-inset-left));
+  background: linear-gradient(180deg, rgba(6, 8, 11, 0.88), transparent);
+  transition: opacity 0.35s ease;
+}
+
+.app.immersive .kbd-toggle,
+.app.immersive .panel-fab {
+  transition: opacity 0.35s ease;
+}
+
+/* Idle: everything fades out together. `visibility` rather than `display` so
+   the fade can play; `pointer-events: none` so a hidden control cannot be hit
+   by a tap meant for the remote screen. */
+.app.immersive.chrome-hidden .stage-toolbar,
+.app.immersive.chrome-hidden .kbd-toggle,
+.app.immersive.chrome-hidden .panel-fab {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+/* The panel stays usable in full screen — it is summoned deliberately, so it
+   must sit above the stage rather than behind it. */
+.app.immersive .panel {
+  z-index: 120;
+}
+.app.immersive .panel-fab {
+  z-index: 130;
+}
+
+/* On a phone the stage is normally a fixed slice of the page; in full screen it
+   must take the whole display instead. */
+@media (max-width: 860px) {
+  .app.immersive .stage {
+    height: auto;
+  }
+  .app.immersive {
+    height: 100%;
+  }
+}
+
+.fs-toggle {
+  flex-shrink: 0;
+}
+.fs-toggle.active {
+  border-color: rgba(70, 224, 160, 0.5);
+  color: var(--live);
+}
+
 /* ---- Touch sizing ---------------------------------------------------------
    Keyed on the input device rather than the screen width, because the problem
    is the finger, not the viewport: a small window on a laptop still has a

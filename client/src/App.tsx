@@ -6,6 +6,7 @@ import { useRemoteControl } from "./control/useRemoteControl";
 import { useTouchControl } from "./control/useTouchControl";
 import { useSoftKeyboard } from "./control/useSoftKeyboard";
 import { ScreenView, intervalForMode, type ContentRect } from "./view/ScreenView";
+import { useFullscreen, useIdleChrome } from "./view/useFullscreen";
 import { useH264Decoder } from "./view/useH264Decoder";
 import { useWebtransport } from "./connect/useWebtransport";
 import { AutotypePanel } from "./autotype-panel/AutotypePanel";
@@ -67,6 +68,12 @@ export function App() {
   useRemoteControl(canvasRef, contentRectRef, conn.send, controlEnabled);
   // Touch gestures and the on-screen keyboard are the mobile equivalents of the
   // two halves above: a canvas gets neither for free.
+  const stageRef = useRef<HTMLElement>(null);
+  const fullscreen = useFullscreen(stageRef);
+  // Controls are worth less than the pixels they cover, until you reach for
+  // them — so they fade while fullscreen and idle, and return on any activity.
+  const chrome = useIdleChrome(fullscreen.active);
+
   const softKeyboard = useSoftKeyboard(conn.send, controlEnabled);
   useTouchControl(canvasRef, contentRectRef, conn.send, controlEnabled, softKeyboard.show);
 
@@ -178,7 +185,11 @@ export function App() {
   const canConnect = conn.status === "idle" || conn.status === "error";
 
   return (
-    <div className="app">
+    <div
+      className={`app${fullscreen.active ? " immersive" : ""}${
+        fullscreen.active && !chrome.visible ? " chrome-hidden" : ""
+      }`}
+    >
       <header className="topbar">
         <div className={`brand ${connected ? "is-live" : ""}`}>
           <span className="brand-mark" />
@@ -266,7 +277,7 @@ export function App() {
       </div>
 
       <div className={`workspace ${panelOpen ? "" : "panel-closed"}`}>
-        <main className="stage">
+        <main className="stage" ref={stageRef}>
           <ScreenView
             frame={conn.latestFrame}
             mode={mode}
@@ -277,6 +288,7 @@ export function App() {
             refreshHz={refreshHz}
             h264={{ active: h264.active, fps: h264.fps, status: h264.status, error: h264.error }}
             softKeyboard={softKeyboard}
+            fullscreen={fullscreen}
           />
         </main>
 
