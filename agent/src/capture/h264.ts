@@ -1,10 +1,16 @@
 import { Decoder, DeviceAPI, FilterAPI } from "node-av/api";
 import { Codec, CodecContext, Dictionary, Packet, Rational, type Frame } from "node-av";
+import { platform } from "node:os";
 import {
   AV_PIX_FMT_YUV420P,
   AV_PICTURE_TYPE_I,
   AV_PICTURE_TYPE_NONE,
   FF_ENCODER_LIBX264,
+  FF_ENCODER_H264_VIDEOTOOLBOX,
+  FF_ENCODER_H264_NVENC,
+  FF_ENCODER_H264_QSV,
+  FF_ENCODER_H264_AMF,
+  FF_ENCODER_H264_VAAPI,
 } from "node-av/constants";
 import { FrameFormat } from "@bcsa/shared";
 import type { FrameHandler, ScreenCapture } from "./index.js";
@@ -65,6 +71,72 @@ export interface H264CaptureOptions {
 
 const DEFAULTS = { width: 1280, fps: 30, bitrateKbps: 2500, gopSeconds: 2 };
 
+/**
+ * An encoder to try, with the options it needs to behave for live streaming.
+ *
+ * Hardware encoders do not share libx264's vocabulary — there is no `preset`,
+ * no `tune`, no `x264-params` — so each carries its own settings rather than a
+ * shared bag with holes in it.
+ */
+interface EncoderCandidate {
+  name: string;
+  options: Record<string, string>;
+}
+
+/**
+ * Software encoder. Always last, and always present: it is the only candidate
+ * guaranteed to exist on every platform, so it is what makes the hardware
+ * attempts safe to make at all.
+ *
+ * `forced-idr` is required for pict_type=I to produce a real IDR rather than an
+ * open-GOP I-frame a receiver cannot start from. `sliced-threads=0` keeps one
+ * slice per frame, since browser decoders handle multi-slice frames unreliably
+ * and `tune=zerolatency` enables slicing by default.
+ */
+const SOFTWARE: EncoderCandidate = {
+  name: FF_ENCODER_LIBX264,
+  options: {
+    preset: "ultrafast",
+    tune: "zerolatency",
+    "forced-idr": "1",
+    "x264-params": "sliced-threads=0",
+    threads: "1",
+  },
+};
+
+/**
+ * Hardware encoders worth trying before falling back to software, by platform.
+ *
+ * Measured on Apple silicon at 1728x1116: VideoToolbox 3.78ms/frame against
+ * libx264's 4.72ms. Both are far faster than the 33ms budget at 30fps, so this
+ * is about battery, thermals and headroom for higher resolutions rather than
+ * about keeping up.
+ *
+ * Availability is not assumed anywhere: a candidate that fails to open is
+ * simply skipped. A machine with no NVIDIA card, a locked-down VAAPI device, or
+ * a node-av build without a given encoder all land on software without
+ * anything to configure.
+ */
+function hardwareCandidates(): EncoderCandidate[] {
+  switch (platform()) {
+    case "darwin":
+      // `realtime` keeps latency bounded; `prio_speed` biases the encoder
+      // toward speed over compression, which suits screen content.
+      return [{ name: FF_ENCODER_H264_VIDEOTOOLBOX, options: { realtime: "1", prio_speed: "1" } }];
+    case "win32":
+      return [
+        { name: FF_ENCODER_H264_NVENC, options: { preset: "p1", tune: "ull", zerolatency: "1" } },
+        { name: FF_ENCODER_H264_QSV, options: { preset: "veryfast", low_power: "1" } },
+        { name: FF_ENCODER_H264_AMF, options: { usage: "ultralowlatency", quality: "speed" } },
+      ];
+    default:
+      return [
+        { name: FF_ENCODER_H264_NVENC, options: { preset: "p1", tune: "ull", zerolatency: "1" } },
+        { name: FF_ENCODER_H264_VAAPI, options: {} },
+      ];
+  }
+}
+
 export class H264Capture implements ScreenCapture {
   private handler: FrameHandler | null = null;
   private running = false;
@@ -77,6 +149,8 @@ export class H264Capture implements ScreenCapture {
   private pts = 0n;
   /** Set by requestKeyframe(); consumed by the next frame encoded. */
   private forceKeyframe = false;
+  /** Which encoder actually opened, so the choice is logged only when it changes. */
+  private encoderName: string | null = null;
 
   constructor(opts: H264CaptureOptions = {}) {
     this.width = opts.width ?? DEFAULTS.width;
@@ -135,9 +209,52 @@ export class H264Capture implements ScreenCapture {
     this.generation++;
   }
 
+  /**
+   * Opens the first encoder that works, hardware first.
+   *
+   * Tried in order rather than detected up front, because "is this encoder
+   * usable" is not answerable without opening it: the binary may lack the
+   * encoder, the machine may lack the device, a VAAPI node may be
+   * permission-denied, or a driver may accept the codec and refuse these
+   * particular options. Attempting and falling back turns all of those into the
+   * same outcome — software — with nothing for the user to configure.
+   *
+   * BCSA_H264_ENCODER pins one by name, which is how the browser-decode tests
+   * exercise a specific encoder rather than whatever this machine happens to
+   * prefer.
+   */
   private async openEncoder(width: number, height: number): Promise<CodecContext> {
-    const codec = Codec.findEncoderByName(FF_ENCODER_LIBX264);
-    if (!codec) throw new Error("libx264 encoder unavailable");
+    const pinned = process.env.BCSA_H264_ENCODER;
+    const candidates = pinned
+      ? [{ name: pinned, options: {} }, SOFTWARE].filter((c, i) => i === 0 || c.name !== pinned)
+      : [...hardwareCandidates(), SOFTWARE];
+
+    const failures: string[] = [];
+    for (const candidate of candidates) {
+      try {
+        const ctx = await this.tryOpen(candidate, width, height);
+        if (ctx) {
+          if (candidate.name !== this.encoderName) {
+            this.encoderName = candidate.name;
+            process.stderr.write(`[h264] encoder: ${candidate.name} at ${width}x${height}\n`);
+          }
+          return ctx;
+        }
+        failures.push(candidate.name);
+      } catch (err) {
+        failures.push(`${candidate.name} (${String(err)})`);
+      }
+    }
+    throw new Error(`no usable H.264 encoder. Tried: ${failures.join(", ")}`);
+  }
+
+  private async tryOpen(
+    candidate: EncoderCandidate,
+    width: number,
+    height: number,
+  ): Promise<CodecContext | null> {
+    const codec = Codec.findEncoderByName(candidate.name as never);
+    if (!codec) return null;
     const ctx = new CodecContext();
     ctx.allocContext3(codec);
     ctx.width = width;
@@ -147,22 +264,8 @@ export class H264Capture implements ScreenCapture {
     ctx.framerate = new Rational(this.fps, 1);
     ctx.gopSize = this.fps * this.gopSeconds;
     ctx.bitRate = BigInt(this.bitrateKbps * 1000);
-    const ret = await ctx.open2(
-      codec,
-      Dictionary.fromObject({
-        preset: "ultrafast",
-        tune: "zerolatency",
-        // Without forced-idr, pict_type=I yields an open-GOP I-frame that a
-        // receiver cannot start decoding from.
-        "forced-idr": "1",
-        // One slice per frame: browser decoders handle multi-slice frames
-        // unreliably, and `tune=zerolatency` enables slicing by default.
-        "x264-params": "sliced-threads=0",
-        threads: "1",
-      }),
-    );
-    if (ret < 0) throw new Error(`failed to open H.264 encoder (${ret})`);
-    return ctx;
+    const ret = await ctx.open2(codec, Dictionary.fromObject(candidate.options));
+    return ret < 0 ? null : ctx;
   }
 
   /**

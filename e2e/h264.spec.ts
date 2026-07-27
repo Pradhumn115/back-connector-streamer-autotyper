@@ -29,6 +29,11 @@ test.beforeAll(async () => {
   AGENT_PORT = await freePort(); CLIENT_PORT = await freePort();
   agent = spawn("npm", ["run", "start", "--workspace", "agent"], {
     cwd: ROOT, detached: true, stdio: ["ignore", "pipe", "pipe"],
+    // BCSA_H264_ENCODER is forwarded so the same suite can be run against a
+    // specific encoder. Hardware and software emit different bitstreams, and
+    // "the browser decodes it" has to be proved for whichever one ships —
+    // a hardware encoder that produces an undecodable stream would otherwise
+    // surface as a black screen with no error anywhere.
     env: { ...process.env, BCSA_PORT: String(AGENT_PORT), BCSA_SECRET: SECRET, BCSA_H264: "1" },
   });
   await waitFor(agent, (s) => s.includes("agent is running"), 60_000);
