@@ -1,4 +1,6 @@
 import { createServer, type Server as HttpsServer } from "node:https";
+import { createReadStream, existsSync, statSync } from "node:fs";
+import { extname, join, normalize, resolve as resolvePath, sep } from "node:path";
 import { timingSafeEqual } from "node:crypto";
 import type { AddressInfo } from "node:net";
 import { WebSocketServer, type WebSocket } from "ws";
@@ -34,6 +36,11 @@ export interface ServerDeps {
   refreshHz: number;
   /** Human-readable capture engine actually in use, surfaced in diagnostics. */
   captureKind?: string;
+  /**
+   * Absolute path to the built client, served over the same HTTPS origin as the
+   * WebSocket. Omit to serve only the reachability page.
+   */
+  clientDir?: string;
   /** Starting point for the adaptive bitrate controller, in kbit/s. */
   initialBitrateKbps?: number;
   /**
@@ -208,7 +215,8 @@ export class ConnectionServer {
     // reachability check ("if you see this, the client can reach the agent").
     this.https = createServer(
       { cert: this.deps.tls.cert, key: this.deps.tls.key },
-      (_req, res) => {
+      (req, res) => {
+        if (this.deps.clientDir && this.serveClient(req.url ?? "/", res)) return;
         res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
         res.end(
           `<!doctype html><meta charset="utf-8">` +
@@ -227,6 +235,66 @@ export class ConnectionServer {
     return new Promise((resolve) => {
       this.https!.listen(this.deps.port, this.deps.host, () => resolve());
     });
+  }
+
+  /**
+   * Serves the built client from the agent itself, so the UI is reachable from
+   * anywhere the agent is.
+   *
+   * This is not merely convenient. Serving the page from the SAME origin as the
+   * WebSocket removes the sharpest edge in the whole setup: a browser refuses a
+   * wss:// connection to an untrusted certificate, gives the page no way to
+   * learn why, and that certificate must be accepted separately for every
+   * address the agent advertises. When the page itself came from
+   * https://<agent>:<port>, accepting it once covers the socket too, because
+   * they are the same origin.
+   *
+   * It also means there is no second server to run, and the UI works over a
+   * Cloudflare Tunnel, which forwards exactly one HTTP origin.
+   *
+   * Returns false when the request is not for a file this should serve, so the
+   * caller can fall back to the reachability page.
+   */
+  private serveClient(url: string, res: import("node:http").ServerResponse): boolean {
+    const root = this.deps.clientDir;
+    if (!root) return false;
+
+    const requested = decodeURIComponent(url.split("?")[0] ?? "/");
+    // Resolve inside the client directory and verify containment. Serving files
+    // by path from a request is the classic directory-traversal sink, and this
+    // process can read the user's whole home directory.
+    const candidate = resolvePath(join(root, normalize(requested)));
+    const inside = candidate === root || candidate.startsWith(root + sep);
+    if (!inside) {
+      res.writeHead(403).end();
+      return true;
+    }
+
+    // A single-page app owns its routing: any path that is not a real file is
+    // served the entry document so a deep link still loads the app.
+    const file =
+      existsSync(candidate) && statSync(candidate).isFile() ? candidate : join(root, "index.html");
+    if (!existsSync(file)) return false;
+
+    const types: Record<string, string> = {
+      ".html": "text/html; charset=utf-8",
+      ".js": "text/javascript; charset=utf-8",
+      ".css": "text/css; charset=utf-8",
+      ".json": "application/json",
+      ".wasm": "application/wasm",
+      ".svg": "image/svg+xml",
+      ".png": "image/png",
+      ".ico": "image/x-icon",
+      ".woff2": "font/woff2",
+    };
+    res.writeHead(200, {
+      "content-type": types[extname(file)] ?? "application/octet-stream",
+      // The transcription models are large and content-hashed by the build;
+      // re-downloading them on every load would dominate startup.
+      "cache-control": file.endsWith("index.html") ? "no-cache" : "public, max-age=31536000",
+    });
+    createReadStream(file).pipe(res);
+    return true;
   }
 
   /** The actual bound port (useful when constructed with port 0 in tests). */

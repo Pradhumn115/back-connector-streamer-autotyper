@@ -11,6 +11,9 @@ import { createNutTypingBackend } from "./autotyper/nutTyping.js";
 import { ConnectionServer } from "./connection/index.js";
 import { H264Capture, h264CaptureAvailable } from "./capture/h264.js";
 import { WebtransportServer } from "./webtransport/server.js";
+import { existsSync } from "node:fs";
+import { dirname, join, resolve as resolvePath } from "node:path";
+import { fileURLToPath } from "node:url";
 import { AudioCapture, detectLoopbackDevice } from "./audio/index.js";
 import { InputLockManager } from "./inputlock/index.js";
 import { createInputLockBackend } from "./inputlock/backends.js";
@@ -18,6 +21,24 @@ import { registerLockHotkey } from "./inputlock/hotkey.js";
 
 // Auto-release the input lock after this long without client activity.
 const INPUT_LOCK_AUTO_RELEASE_MS = 10_000;
+
+/**
+ * Absolute path to the built client, or null when it has not been built.
+ *
+ * Checked at both the source and compiled layouts because the agent runs
+ * either way: `tsx src/index.ts` in development and `node dist/index.js` after
+ * a build, and the client sits at a different depth from each.
+ */
+function clientDistDir(): string | undefined {
+  const here = dirname(fileURLToPath(import.meta.url));
+  for (const candidate of [
+    resolvePath(here, "..", "..", "client", "dist"),
+    resolvePath(here, "..", "..", "..", "client", "dist"),
+  ]) {
+    if (existsSync(join(candidate, "index.html"))) return candidate;
+  }
+  return undefined;
+}
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -110,6 +131,12 @@ async function main(): Promise<void> {
     audio,
     refreshHz,
     captureKind,
+    // Serve the built client from the agent when it exists, so the UI is
+    // reachable wherever the agent is — and, more importantly, from the SAME
+    // origin as the WebSocket, which means accepting the certificate once
+    // covers both. Absent in a source checkout that has not been built, where
+    // the Vite dev server serves the UI instead.
+    clientDir: clientDistDir(),
     initialBitrateKbps: 2500,
     webtransport: webtransport
       ? {
