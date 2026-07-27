@@ -294,3 +294,69 @@ test("lowers the encoder bitrate when the link is congested", async () => {
     `expected congestion to lower the bitrate below 2500, got ${JSON.stringify(bitrates)}`,
   );
 });
+
+/**
+ * When bitrate alone cannot rescue a congested link, quality must step down.
+ *
+ * Below roughly 400kbps there are not enough bits to describe a full-size frame
+ * 60 times a second, and the picture turns to mush rather than degrading
+ * gracefully. Spending the remaining budget on fewer pixels and fewer frames is
+ * what keeps text legible — so the controller is expected to walk DOWN the
+ * quality ladder once bitrate has bottomed out, not sit at the floor producing
+ * an unreadable image.
+ *
+ * Congestion is simulated by a drop threshold of -1, so every frame takes the
+ * backpressure path exactly as on a saturated link.
+ */
+test("steps resolution and fps down when bitrate hits the floor", async () => {
+  const scales: Array<{ width: number; fps: number }> = [];
+  const bitrates: number[] = [];
+  const capture = fakeCapture();
+  const withHooks = capture as unknown as {
+    setBitrate: (k: number) => void;
+    setScale: (w: number, f: number) => void;
+  };
+  withHooks.setBitrate = (kbps) => bitrates.push(kbps);
+  withHooks.setScale = (width, fps) => scales.push({ width, fps });
+
+  const server = new ConnectionServer({
+    secret: "s3cret",
+    nickname: "test-agent",
+    port: 0,
+    host: "127.0.0.1",
+    tls: ephemeralTls(),
+    input: fakeInput([]),
+    capture,
+    typingBackend: fakeTyping(),
+    inputLock: fakeInputLock(),
+    audio: new AudioCapture(null),
+    refreshHz: 60,
+    maxQueuedFrameBytes: -1, // permanently "behind"
+    initialBitrateKbps: 700, // close to the floor, so it bottoms out quickly
+  });
+  await server.listen();
+  const ws = new WebSocket(`wss://127.0.0.1:${server.boundPort()}`, { rejectUnauthorized: false });
+  await once(ws, "open");
+  const info = nextMessage(ws, "agentInfo");
+  ws.send(encodeMessage({ type: "auth", secret: "s3cret" }));
+  await info;
+
+  // Long enough for bitrate to reach the floor and the ladder to move.
+  await new Promise((r) => setTimeout(r, 9000));
+  ws.close();
+  await server.close();
+
+  assert.ok(
+    bitrates.length > 0 && bitrates[bitrates.length - 1] <= 400,
+    `expected bitrate to reach the floor, got ${JSON.stringify(bitrates)}`,
+  );
+  assert.ok(
+    scales.length > 0,
+    "expected the controller to step quality down once bitrate could not recover the link",
+  );
+  const last = scales[scales.length - 1];
+  assert.ok(
+    last.width < 1920 || last.fps < 60,
+    `expected a smaller frame or lower fps, got ${JSON.stringify(last)}`,
+  );
+});

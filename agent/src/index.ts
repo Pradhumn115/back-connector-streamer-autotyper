@@ -34,6 +34,11 @@ async function main(): Promise<void> {
 
   // Prefer the continuous ffmpeg pipeline (can sustain ~30fps); fall back to the
   // per-frame screenshot loop (a few fps) when ffmpeg isn't installed.
+  // Encode width. 1920 by default rather than the display's native size:
+  // quality is bits per pixel, so a native-resolution encode at the same
+  // bitrate looks SOFTER, and it costs proportionally more to encode. 1920 is
+  // already comfortably readable for remote control. Raise it — up to native —
+  // with BCSA_MAX_WIDTH on a machine and link that can afford it.
   const maxWidth = process.env.BCSA_MAX_WIDTH ? Number(process.env.BCSA_MAX_WIDTH) : 1920;
   const refreshHz = detectRefreshHz();
   let capture: ScreenCapture;
@@ -57,7 +62,7 @@ async function main(): Promise<void> {
   // BCSA_H264=0 forces the old path, for comparing the two.
   const h264Wanted = process.env.BCSA_H264 !== "0";
   if (h264Wanted && (await h264CaptureAvailable())) {
-    capture = new H264Capture({ width: maxWidth, fps: Math.min(30, refreshHz) });
+    capture = new H264Capture({ width: maxWidth, fps: Math.min(60, refreshHz) });
     captureKind = `h264 in-process (max width ${maxWidth}px)`;
   } else if (ffmpegAvailable()) {
     capture = new FfmpegCapture({ maxWidth });
@@ -112,6 +117,9 @@ async function main(): Promise<void> {
           certHash: webtransport.certHash,
           get hasSession() {
             return webtransport!.hasSession;
+          },
+          get backlogBytes() {
+            return webtransport!.backlogBytes;
           },
           send: (payload) => webtransport!.send(payload),
         }

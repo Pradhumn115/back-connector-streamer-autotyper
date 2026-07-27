@@ -46,16 +46,16 @@ export const SCREENSHOT_INTERVAL_MS = 2000;
  * carries that, so the surplus simply queued on the agent and the picture fell
  * permanently behind real time.
  *
- * The agent now drops rather than queues (see MAX_QUEUED_FRAME_BYTES in
- * agent/src/connection/index.ts), which bounds the latency — but requesting
- * 120fps would still spend a JPEG encode on ~90 frames a second purely to
- * throw them away. 30fps is past what remote control needs, cuts the ask to
- * ~63 Mbit/s, and leaves the drop path as headroom rather than the norm.
+ * That reasoning applied when every frame was a full JPEG. The default video
+ * path is now H.264, where a frame costs ~7KB rather than ~267KB, so 60fps is
+ * affordable and visibly smoother — and the adaptive controller walks the rate
+ * back down on any link that cannot sustain it, rather than queueing.
  *
- * This is a Classic-only ceiling; the WebRTC path has its own per-tier fps cap
- * and real congestion control, and is the better choice over the internet.
+ * The MJPEG fallback still exists for agents without the in-process encoder,
+ * and 60fps is expensive there; that path is protected by the agent's
+ * backpressure, which drops rather than queues.
  */
-export const MAX_FPS = 30;
+export const MAX_FPS = 60;
 
 /**
  * Interval (ms) to request for a mode. Video auto-targets the agent's display

@@ -44,6 +44,8 @@ export interface ServerDeps {
     port: number;
     certHash: string | null;
     hasSession: boolean;
+    /** Bytes written to QUIC but not yet flushed; the congestion signal there. */
+    backlogBytes: number;
     send(payload: Uint8Array): Promise<boolean>;
   };
   /**
@@ -114,12 +116,50 @@ const DROP_LOG_THROTTLE_MS = 5000;
  * the congestion that was just escaped.
  */
 const BITRATE_MIN_KBPS = 400;
-const BITRATE_MAX_KBPS = 6000;
+/**
+ * Ceiling, raised for LAN.
+ *
+ * Resolution and bitrate are not independent: spreading 6 Mbit/s over a native
+ * desktop looks SOFTER than the same bits over 1280px, because quality is
+ * bits-per-pixel. Raising the frame size without raising this would have made
+ * the picture worse, not better. The controller still walks down from here on
+ * any link that cannot sustain it, so a constrained connection never pays for
+ * the higher ceiling.
+ */
+const BITRATE_MAX_KBPS = 20000;
 const BITRATE_DOWN_FACTOR = 0.6;
 const BITRATE_UP_FACTOR = 1.15;
 
-/** How often the controller reconsiders the bitrate. */
+/** How often the controller reconsiders quality. */
 const ADAPT_INTERVAL_MS = 2000;
+
+/**
+ * Frame widths to fall back through when bitrate alone cannot rescue the link,
+ * and the frame rates paired with them.
+ *
+ * Ordered best-first. Resolution is given up before frame rate at the top of
+ * the ladder, because for a remote desktop a slightly smaller sharp image beats
+ * a large mushy one; frame rate is only halved once the picture is already
+ * small, where smoothness starts to matter more than detail.
+ */
+const QUALITY_LADDER: ReadonlyArray<{ width: number; fps: number }> = [
+  { width: 1920, fps: 60 },
+  { width: 1920, fps: 30 },
+  { width: 1280, fps: 30 },
+  { width: 960, fps: 30 },
+  { width: 960, fps: 15 },
+  { width: 640, fps: 15 },
+];
+
+/**
+ * Consecutive healthy checks required before climbing back up a rung.
+ *
+ * Stepping resolution reopens the encoder and forces a keyframe, which is a
+ * visible cost, so it must not oscillate. Coming down is immediate — congestion
+ * is already hurting — but going up waits for sustained evidence that the link
+ * can hold it.
+ */
+const LADDER_RECOVERY_CHECKS = 5;
 
 /**
  * Queue depth that counts as "the link is behind".
@@ -150,6 +190,10 @@ export class ConnectionServer {
   private adaptTimer: NodeJS.Timeout | null = null;
   /** Worst queue depth seen since the last adaptation decision. */
   private peakBacklog = 0;
+  /** Index into QUALITY_LADDER; 0 is best. */
+  private ladderRung = 0;
+  /** Consecutive healthy checks, for cautious recovery up the ladder. */
+  private healthyChecks = 0;
   /** Frames dropped since the last adaptation decision. */
   private dropsSinceAdapt = 0;
 
@@ -236,12 +280,47 @@ export class ConnectionServer {
       const ws = this.controller;
       if (!ws || ws.readyState !== ws.OPEN || this.bitrateKbps === null) return;
 
-      const backlog = Math.max(this.peakBacklog, ws.bufferedAmount);
+      // Read the queue of whichever transport is actually carrying video.
+      //
+      // Using the WebSocket's queue unconditionally was wrong once QUIC
+      // existed: on that path the socket carries only control messages, so it
+      // always looked idle and the controller raised the bitrate to the ceiling
+      // no matter how congested the link really was.
+      const wt = this.deps.webtransport;
+      const live = wt?.hasSession ? wt.backlogBytes : ws.bufferedAmount;
+      const backlog = Math.max(this.peakBacklog, live);
       const drops = this.dropsSinceAdapt;
       this.peakBacklog = 0;
       this.dropsSinceAdapt = 0;
 
       const congested = drops > 0 || backlog > ADAPT_BACKLOG_BYTES;
+
+      // Resolution and frame rate move only when bitrate has run out of room.
+      // Bitrate is the cheap, invisible lever; changing frame size reopens the
+      // encoder and forces a keyframe, so it is reserved for links that cannot
+      // be rescued by spending fewer bits on the same picture.
+      if (this.deps.capture.setScale) {
+        if (congested && this.bitrateKbps <= BITRATE_MIN_KBPS) {
+          this.healthyChecks = 0;
+          if (this.ladderRung < QUALITY_LADDER.length - 1) {
+            this.ladderRung++;
+            this.applyRung("still congested at the bitrate floor");
+          }
+        } else if (!congested && this.bitrateKbps >= BITRATE_MAX_KBPS) {
+          // Only climb back when bitrate is already maxed AND the link has been
+          // quiet for a while: stepping up prematurely re-creates the
+          // congestion that forced the step down.
+          this.healthyChecks++;
+          if (this.healthyChecks >= LADDER_RECOVERY_CHECKS && this.ladderRung > 0) {
+            this.healthyChecks = 0;
+            this.ladderRung--;
+            this.applyRung("link sustained at full bitrate");
+          }
+        } else {
+          this.healthyChecks = 0;
+        }
+      }
+
       const previous = this.bitrateKbps;
       const next = congested
         ? Math.max(BITRATE_MIN_KBPS, Math.round(previous * BITRATE_DOWN_FACTOR))
@@ -250,7 +329,15 @@ export class ConnectionServer {
       // Ignore changes too small to matter: every adjustment reopens the
       // encoder and emits a keyframe, which costs far more bytes than a 3%
       // bitrate tweak would ever save.
-      if (Math.abs(next - previous) < previous * 0.1) return;
+      //
+      // Except when the step lands on a bound. Suppressing those strands the
+      // controller just short of its own floor — a 420 -> 400 step is under
+      // 10%, so it was skipped forever, and the quality ladder below (which
+      // only engages AT the floor) could never trigger no matter how congested
+      // the link became.
+      const atBound = next === BITRATE_MIN_KBPS || next === BITRATE_MAX_KBPS;
+      if (!atBound && Math.abs(next - previous) < previous * 0.1) return;
+      if (next === previous) return;
 
       this.bitrateKbps = next;
       this.deps.capture.setBitrate?.(next);
@@ -262,6 +349,15 @@ export class ConnectionServer {
     this.adaptTimer.unref?.();
   }
 
+  /** Applies the current ladder rung to the encoder and says why. */
+  private applyRung(reason: string): void {
+    const rung = QUALITY_LADDER[this.ladderRung];
+    this.deps.capture.setScale?.(rung.width, rung.fps);
+    process.stderr.write(
+      `[adapt] quality -> ${rung.width}px @ ${rung.fps}fps (${reason})\n`,
+    );
+  }
+
   private stopAdapting(): void {
     if (this.adaptTimer) {
       clearInterval(this.adaptTimer);
@@ -269,6 +365,8 @@ export class ConnectionServer {
     }
     this.peakBacklog = 0;
     this.dropsSinceAdapt = 0;
+    this.ladderRung = 0;
+    this.healthyChecks = 0;
   }
 
   /**
@@ -406,7 +504,9 @@ export class ConnectionServer {
       // skipped too, not just the send: a frame that would only be dropped is
       // not worth the JPEG encode. See MAX_QUEUED_FRAME_BYTES for why an
       // unbounded queue here made Classic drift permanently behind real time.
-      if (ws.bufferedAmount > this.peakBacklog) this.peakBacklog = ws.bufferedAmount;
+      const wtSend = this.deps.webtransport;
+      const queued = wtSend?.hasSession ? wtSend.backlogBytes : ws.bufferedAmount;
+      if (queued > this.peakBacklog) this.peakBacklog = queued;
       if (ws.bufferedAmount > (this.deps.maxQueuedFrameBytes ?? MAX_QUEUED_FRAME_BYTES)) {
         this.droppedFrames++;
         this.dropsSinceAdapt++;

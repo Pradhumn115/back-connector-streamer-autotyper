@@ -31,6 +31,20 @@ export interface ScreenCapture {
    * makes continuous adaptation practical.
    */
   setBitrate?(kbps: number): void;
+  /**
+   * Re-open at a smaller frame size and/or lower frame rate.
+   *
+   * Separate from setBitrate because it is the lever of last resort: once
+   * bitrate is at its floor there are not enough bits to describe this many
+   * pixels this often, and the picture turns to mush rather than degrading.
+   * Spending the remaining budget on fewer pixels or fewer frames is what keeps
+   * text legible on a bad link.
+   */
+  setScale?(width: number, fps: number): void;
+  /** Current encode width, for a controller stepping relative to it. */
+  readonly encodeWidth?: number;
+  /** Current encode frame rate. */
+  readonly encodeFps?: number;
   /** Set the desired cadence; interpreted as an interval (ms) between frames. */
   setInterval(ms: number): void;
   stop(): void;

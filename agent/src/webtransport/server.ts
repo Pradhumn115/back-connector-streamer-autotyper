@@ -39,6 +39,18 @@ export class WebtransportServer {
   /** Sessions currently able to receive frames. */
   private sessions = new Set<WebtransportSession>();
   private closed = false;
+  /**
+   * Bytes handed to QUIC whose write has not completed yet.
+   *
+   * This is the congestion signal for the adaptive controller. QUIC applies
+   * backpressure at the stream writer: when its congestion window is full, the
+   * write simply does not resolve, so unfinished bytes accumulate here exactly
+   * as they would in a TCP send queue. Without it the controller would read the
+   * control WebSocket's queue, which on this path carries no video at all and
+   * therefore always looks idle — reporting a healthy link no matter how
+   * congested QUIC actually is.
+   */
+  private inFlight = 0;
 
   constructor(private readonly opts: WebtransportServerOptions) {}
 
@@ -54,6 +66,11 @@ export class WebtransportServer {
   /** True once at least one client is attached and frames are worth sending. */
   get hasSession(): boolean {
     return this.sessions.size > 0;
+  }
+
+  /** Bytes written to QUIC but not yet flushed; the congestion signal. */
+  get backlogBytes(): number {
+    return this.inFlight;
   }
 
   async start(): Promise<void> {
@@ -113,14 +130,20 @@ export class WebtransportServer {
     if (this.sessions.size === 0) return false;
     let sent = false;
     for (const session of this.sessions) {
+      this.inFlight += payload.byteLength;
       try {
         const stream = await session.createUnidirectionalStream();
         const writer = stream.getWriter();
+        // These awaits are the measurement: QUIC withholds completion while its
+        // congestion window is full, so a congested link keeps bytes counted in
+        // `inFlight` rather than acknowledging them.
         await writer.write(payload);
         await writer.close();
         sent = true;
       } catch {
         // Drop this frame for this session; a later keyframe recovers it.
+      } finally {
+        this.inFlight -= payload.byteLength;
       }
     }
     return sent;
