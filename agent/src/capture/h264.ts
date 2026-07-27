@@ -137,6 +137,47 @@ function hardwareCandidates(): EncoderCandidate[] {
   }
 }
 
+/**
+ * Can this machine actually capture and encode H.264 in-process?
+ *
+ * Probed by doing it rather than by inspecting the platform: the screen device
+ * may be missing or permission-denied, node-av's binary may lack an encoder,
+ * and a hardware encoder may accept the codec but reject these options. All of
+ * those are only answerable by trying, and all of them must degrade to the
+ * older capture path rather than leaving a black screen.
+ *
+ * Deliberately opens and closes a real device and a real encoder. That costs a
+ * few hundred milliseconds once at startup, which is the right price for
+ * picking a video path that works.
+ */
+export async function h264CaptureAvailable(): Promise<boolean> {
+  try {
+    const demuxer = await DeviceAPI.openScreen({ frameRate: 30 });
+    try {
+      const stream = demuxer.video();
+      if (!stream) return false;
+      const codec = Codec.findEncoderByName(FF_ENCODER_LIBX264);
+      if (!codec) return false;
+      const ctx = new CodecContext();
+      ctx.allocContext3(codec);
+      ctx.width = 320;
+      ctx.height = 240;
+      ctx.pixelFormat = AV_PIX_FMT_YUV420P;
+      ctx.timeBase = new Rational(1, 30);
+      ctx.framerate = new Rational(30, 1);
+      ctx.bitRate = 500_000n;
+      return (await ctx.open2(codec, Dictionary.fromObject({ preset: "ultrafast" }))) >= 0;
+    } finally {
+      // Release the capture device immediately: two processes cannot capture
+      // the screen at once, and holding it here would break the real capture
+      // that is about to start.
+      await (demuxer as { close?: () => Promise<void> }).close?.();
+    }
+  } catch {
+    return false;
+  }
+}
+
 export class H264Capture implements ScreenCapture {
   private handler: FrameHandler | null = null;
   private running = false;

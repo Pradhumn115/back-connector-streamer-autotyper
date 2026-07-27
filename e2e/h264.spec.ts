@@ -34,7 +34,14 @@ test.beforeAll(async () => {
     // "the browser decodes it" has to be proved for whichever one ships —
     // a hardware encoder that produces an undecodable stream would otherwise
     // surface as a black screen with no error anywhere.
-    env: { ...process.env, BCSA_PORT: String(AGENT_PORT), BCSA_SECRET: SECRET, BCSA_H264: "1" },
+    // BCSA_H264 is deliberately NOT set: H.264 is the default path now, so the
+    // suite should exercise what a user actually gets rather than a flag only
+    // the test knows about. BCSA_H264_ENCODER is forwarded so the same suite can
+    // be run against a specific encoder — hardware and software emit different
+    // bitstreams, and "a browser decodes it" has to be proved for whichever
+    // ships, since an undecodable stream shows up as a black screen with no
+    // error anywhere.
+    env: { ...process.env, BCSA_PORT: String(AGENT_PORT), BCSA_SECRET: SECRET },
   });
   await waitFor(agent, (s) => s.includes("agent is running"), 60_000);
   client = spawn("npx", ["vite", "--port", String(CLIENT_PORT), "--strictPort"], {
