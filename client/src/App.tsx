@@ -30,6 +30,17 @@ export function App() {
   // conn isn't defined yet at the point onWebrtcOffer is declared, so we can't
   // close over conn.sendWebrtcAnswer directly.
   const [pendingOfferSdp, setPendingOfferSdp] = useState<string | null>(null);
+  /**
+   * Counts offers so a superseded one's answer is never sent.
+   *
+   * Answering is not instant — handleOffer waits for ICE gathering to complete
+   * before it can return an SDP. Anything that restarts the session meanwhile
+   * (switching codec, reconnecting) makes the agent tear down the session that
+   * offer belonged to and create a new one, so the late answer arrives for a
+   * session that no longer exists and the agent reports "webrtcAnswer received
+   * with no active WebRTC session" while the client falls back to Classic.
+   */
+  const offerGenerationRef = useRef(0);
   // Declared before useConnection because the H.264 decoder needs the canvas
   // and useConnection needs the decoder's pushFrame.
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -85,9 +96,15 @@ export function App() {
     if (pendingOfferSdp === null) return;
     const sdp = pendingOfferSdp;
     setPendingOfferSdp(null);
+    const generation = ++offerGenerationRef.current;
     void webrtc
       .handleOffer(sdp)
-      .then((answer) => conn.sendWebrtcAnswer(answer))
+      .then((answer) => {
+        // A newer offer arrived while we were gathering ICE; this answer is for
+        // a session the agent has already replaced.
+        if (generation !== offerGenerationRef.current) return;
+        conn.sendWebrtcAnswer(answer);
+      })
       .catch((err) => {
         // handleOffer already records the failure in webrtc.status/error;
         // this catch only prevents an unhandled promise rejection.
@@ -95,6 +112,15 @@ export function App() {
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingOfferSdp]);
+
+  // A WebRTC session that comes up healthy retires any error from the previous
+  // one. Restarting a session (switching codec) can briefly surface an error
+  // about the session it replaced, which would otherwise sit on screen for the
+  // rest of the connection.
+  useEffect(() => {
+    if (webrtc.status === "connected") conn.clearError();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [webrtc.status]);
 
   // No silent fallback: if WebRTC errors out, revert to Classic and surface
   // the error (webrtc.error is already shown via ScreenView/hint text below).
@@ -191,6 +217,7 @@ export function App() {
     if (next === videoCodec) return;
     setVideoCodec(next);
     if (transport !== "webrtc") return;
+    offerGenerationRef.current++;
     conn.stopWebrtc();
     webrtc.stop();
     conn.startWebrtc(next);
@@ -582,7 +609,19 @@ export function App() {
 
           <DiagnosticsPanel
             connected={connected}
-            hasFrame={conn.latestFrame !== null}
+            // Video reaches the canvas by three different routes, and only one
+            // of them produces a `latestFrame`. Reporting on that alone told
+            // the user "no frames yet" while the screen was visibly updating.
+            hasFrame={conn.latestFrame !== null || h264.active || webrtc.stream !== null}
+            frameSource={
+              webrtc.stream !== null
+                ? "WebRTC"
+                : h264.active
+                  ? "H.264 over WebSocket"
+                  : conn.latestFrame !== null
+                    ? "Classic MJPEG"
+                    : undefined
+            }
             diagnostics={conn.diagnostics}
             onRun={conn.runDiagnostics}
             onReconnect={onConnect}

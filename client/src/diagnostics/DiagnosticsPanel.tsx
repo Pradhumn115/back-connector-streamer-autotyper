@@ -4,7 +4,16 @@ import type { DiagnosticsState } from "../connect/useConnection";
 
 interface DiagnosticsPanelProps {
   connected: boolean;
+  /**
+   * Whether video is actually reaching the screen, from ANY source.
+   *
+   * Must not be derived from the Classic JPEG frame alone: that stays null on
+   * both the WebRTC and H.264-over-WebSocket paths, so this check reported
+   * "connected but no frames yet" while video was visibly streaming at ~30fps.
+   */
   hasFrame: boolean;
+  /** Which source is producing them, for the detail line. */
+  frameSource?: string;
   diagnostics: DiagnosticsState;
   onRun: () => void;
   /** Safe in-app auto-fix: retry the connection with the current fields. */
@@ -25,6 +34,7 @@ interface Row extends DiagnosticCheck {
 export function DiagnosticsPanel({
   connected,
   hasFrame,
+  frameSource,
   diagnostics,
   onRun,
   onReconnect,
@@ -45,7 +55,12 @@ export function DiagnosticsPanel({
           action: { label: "Reconnect", run: onReconnect },
         },
     hasFrame
-      ? { id: "frames", label: "Live frames", status: "ok", detail: "screen is streaming" }
+      ? {
+          id: "frames",
+          label: "Live frames",
+          status: "ok",
+          detail: frameSource ? `streaming (${frameSource})` : "screen is streaming",
+        }
       : {
           id: "frames",
           label: "Live frames",

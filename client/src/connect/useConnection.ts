@@ -115,6 +115,8 @@ export interface UseConnection {
   setAudio: (enabled: boolean) => void;
   runDiagnostics: () => void;
   startWebrtc: (videoCodec?: VideoCodecPreference) => void;
+  /** Retire the current error banner; used once a session comes up healthy. */
+  clearError: () => void;
   stopWebrtc: () => void;
   sendWebrtcAnswer: (sdp: string) => void;
 }
@@ -301,6 +303,12 @@ export function useConnection(opts: UseConnectionOptions = {}): UseConnection {
         if (msg.ok) {
           authedRef.current = true;
           setStatus("connected");
+          // A successful connection retires whatever went wrong last time.
+          // Without this the banner is sticky: a certificate hint, or a
+          // transient "webrtcAnswer received with no active WebRTC session"
+          // from a session that has since been replaced, stays on screen and
+          // makes an already-fixed problem look broken.
+          setLastError(null);
           // targetIdxRef.current indexes into buildTargets()'s *filtered*
           // array (blank fields are skipped), so it does not line up with
           // the fixed LAN(0)/Tailscale(1)/Tunnel(2) slots whenever an
@@ -609,6 +617,8 @@ export function useConnection(opts: UseConnectionOptions = {}): UseConnection {
     send({ type: "runDiagnostics" });
   }, [send]);
 
+  const clearError = useCallback(() => setLastError(null), []);
+
   const startWebrtc = useCallback(
     (videoCodec?: VideoCodecPreference) => send({ type: "startWebrtc", videoCodec }),
     [send],
@@ -656,6 +666,7 @@ export function useConnection(opts: UseConnectionOptions = {}): UseConnection {
     runDiagnostics,
     startWebrtc,
     stopWebrtc,
+    clearError,
     sendWebrtcAnswer,
   };
 }
