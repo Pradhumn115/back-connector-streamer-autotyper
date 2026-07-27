@@ -410,6 +410,13 @@ export function useConnection(opts: UseConnectionOptions = {}): UseConnection {
       authedRef.current = false;
       setStatus(idx === 0 ? "connecting" : "connecting");
 
+      // Track whether this socket ever opened. A wss:// connection that fails
+      // during the handshake is almost always an unaccepted self-signed
+      // certificate, and the browser deliberately withholds the reason from the
+      // WebSocket API — the page sees only "closed". Without saying so, the UI
+      // shows "reconnecting…" forever, which is indistinguishable from the
+      // agent being down and gives no hint that the fix is one click away.
+      let everOpened = false;
       let ws: WebSocket;
       try {
         ws = new WebSocket(targets[idx]);
@@ -436,6 +443,7 @@ export function useConnection(opts: UseConnectionOptions = {}): UseConnection {
       }, LAN_TIMEOUT_MS);
 
       ws.onopen = () => {
+        everOpened = true;
         if (connectTimerRef.current !== null) {
           window.clearTimeout(connectTimerRef.current);
           connectTimerRef.current = null;
@@ -477,6 +485,19 @@ export function useConnection(opts: UseConnectionOptions = {}): UseConnection {
       ws.onclose = () => {
         if (wsRef.current !== ws) return; // superseded by a newer socket
         wsRef.current = null;
+        if (!everOpened) {
+          // Never completed the handshake. The agent's certificate is
+          // self-signed and per-address: accepting it for one address does
+          // nothing for the others the agent prints, so this is hit routinely
+          // by connecting over LAN after accepting the cert over Tailscale (or
+          // vice versa). Name the exact URL to open, since the browser will not.
+          setLastError(
+            `Couldn't open a secure connection to ${targets[idx].replace(/^wss:\/\//, "")}. ` +
+              `If this is the agent's address, open ${targets[idx].replace(/^wss:\/\//, "https://")} ` +
+              `in a tab and accept its certificate, then press Connect again. ` +
+              `The certificate must be accepted separately for every address.`,
+          );
+        }
         if (connectTimerRef.current !== null) {
           window.clearTimeout(connectTimerRef.current);
           connectTimerRef.current = null;

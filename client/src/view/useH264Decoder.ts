@@ -32,6 +32,16 @@ export type H264Status = "idle" | "waiting-for-keyframe" | "decoding" | "unsuppo
 export interface UseH264Decoder {
   status: H264Status;
   error: string | null;
+  /**
+   * Rolling frames-per-second of frames the decoder actually produced.
+   *
+   * Measured here rather than from arrivals: what matters to a viewer is how
+   * often the picture updates, and a stream can arrive while decoding nothing.
+   * The Classic readout counts JPEG messages, which never arrive on this path.
+   */
+  fps: number;
+  /** True once at least one frame has been decoded and painted. */
+  active: boolean;
   /** Feed one decoded envelope; ignores non-H264 formats. */
   pushFrame: (frame: DecodedFrame) => void;
   reset: () => void;
@@ -47,6 +57,10 @@ const CODEC = "avc1.42E01F";
 export function useH264Decoder(canvasRef: React.RefObject<HTMLCanvasElement>): UseH264Decoder {
   const [status, setStatus] = useState<H264Status>("idle");
   const [error, setError] = useState<string | null>(null);
+  const [fps, setFps] = useState(0);
+  const [active, setActive] = useState(false);
+  /** Timestamps of recently decoded frames, for the rolling rate. */
+  const frameTimesRef = useRef<number[]>([]);
   const decoderRef = useRef<VideoDecoder | null>(null);
   /** Until a keyframe arrives, delta frames cannot be decoded and are dropped. */
   const primedRef = useRef(false);
@@ -61,12 +75,15 @@ export function useH264Decoder(canvasRef: React.RefObject<HTMLCanvasElement>): U
     }
     decoderRef.current = null;
     primedRef.current = false;
+    frameTimesRef.current = [];
   }, []);
 
   const reset = useCallback(() => {
     teardown();
     setStatus("idle");
     setError(null);
+    setFps(0);
+    setActive(false);
   }, [teardown]);
 
   useEffect(() => teardown, [teardown]);
@@ -94,6 +111,16 @@ export function useH264Decoder(canvasRef: React.RefObject<HTMLCanvasElement>): U
         // VideoFrames hold GPU/system memory and are not garbage collected —
         // failing to close every one starves the decoder within seconds.
         frame.close();
+
+        const now = performance.now();
+        const times = frameTimesRef.current;
+        times.push(now);
+        // Keep a ~2s window so the figure tracks reality rather than averaging
+        // over the whole session.
+        while (times.length > 2 && now - times[0] > 2000) times.shift();
+        const span = (times[times.length - 1] - times[0]) / 1000;
+        setFps(span > 0 ? (times.length - 1) / span : 0);
+        setActive(true);
         setStatus((s) => (s === "decoding" ? s : "decoding"));
       },
       error: (e) => {
@@ -136,5 +163,5 @@ export function useH264Decoder(canvasRef: React.RefObject<HTMLCanvasElement>): U
     [ensureDecoder],
   );
 
-  return { status, error, pushFrame, reset };
+  return { status, error, fps, active, pushFrame, reset };
 }

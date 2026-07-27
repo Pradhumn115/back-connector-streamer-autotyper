@@ -26,6 +26,13 @@ interface ScreenViewProps {
   refreshHz?: number;
   /** Which transport is active: Classic (JPEG/PCM over WS) or WebRTC. */
   transport: "classic" | "webrtc";
+  /**
+   * State of the H.264-over-WebSocket video source, when the agent is sending
+   * one. It shares the Classic canvas, so this view must know it is live —
+   * otherwise the "No signal" overlay and the fps readout, both driven by JPEG
+   * arrivals, would report a working stream as dead.
+   */
+  h264: { active: boolean; fps: number; status: string; error: string | null };
   /** Video codec the agent is asked to offer; "auto" lets the browser choose. */
   videoCodec: VideoCodecPreference;
   onSetVideoCodec: (codec: VideoCodecPreference) => void;
@@ -87,6 +94,7 @@ export function ScreenView({
   contentRectRef,
   refreshHz,
   transport,
+  h264,
   videoCodec,
   onSetVideoCodec,
   onSetTransport,
@@ -383,7 +391,7 @@ export function ScreenView({
                 mode <b>{mode}</b>
               </span>
               <span>
-                fps <b>{fps.toFixed(1)}</b>
+                fps <b>{(h264.active ? h264.fps : fps).toFixed(1)}</b>
               </span>
               {mode === "video" && (
                 <span>
@@ -422,7 +430,17 @@ export function ScreenView({
             className={controlEnabled ? "canvas controllable" : "canvas"}
           />
         )}
-        {transport === "classic" && !frame && <div className="canvas-empty">No signal</div>}
+        {transport === "classic" && !frame && !h264.active && (
+          <div className="canvas-empty">
+            {h264.status === "unsupported"
+              ? "This browser can't decode the agent's video (no WebCodecs)"
+              : h264.status === "error"
+                ? `Video decode failed: ${h264.error ?? "unknown error"}`
+                : h264.status === "waiting-for-keyframe"
+                  ? "Waiting for a keyframe…"
+                  : "No signal"}
+          </div>
+        )}
       </div>
     </>
   );

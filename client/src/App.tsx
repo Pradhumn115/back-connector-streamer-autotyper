@@ -258,9 +258,15 @@ export function App() {
     audioTx.setMode(next);
   };
 
-  // Stop live transcription if the connection drops (audio stops arriving).
+  // Stop live transcription if the connection drops (audio stops arriving),
+  // and drop the H.264 decoder with it — it was primed against a keyframe from
+  // a stream that no longer exists, and reusing it against the next one leaves
+  // the picture frozen or corrupt.
   useEffect(() => {
-    if (!connected) audioTx.stopLive();
+    if (!connected) {
+      audioTx.stopLive();
+      h264.reset();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connected]);
 
@@ -388,6 +394,7 @@ export function App() {
             contentRectRef={contentRectRef}
             refreshHz={refreshHz}
             transport={transport}
+            h264={{ active: h264.active, fps: h264.fps, status: h264.status, error: h264.error }}
             onSetTransport={onSetTransport}
             videoCodec={videoCodec}
             onSetVideoCodec={onSetVideoCodec}
