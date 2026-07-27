@@ -16,7 +16,10 @@
   },
   "dependencies": {
     "@bcsa/shared": "*",
+    "@fails-components/webtransport": "^1.6.7",
+    "@fails-components/webtransport-transport-http3-quiche": "^1.6.7",
     "@nut-tree-fork/nut-js": "^4.2.6",
+    "@peculiar/x509": "^1.14.3",
     "node-av": "^6.1.1",
     "screenshot-desktop": "^1.15.4",
     "selfsigned": "^2.4.1",

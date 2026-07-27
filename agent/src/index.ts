@@ -10,6 +10,7 @@ import { createNutBackend } from "./input/nutBackend.js";
 import { createNutTypingBackend } from "./autotyper/nutTyping.js";
 import { ConnectionServer } from "./connection/index.js";
 import { H264Capture, h264CaptureAvailable } from "./capture/h264.js";
+import { WebtransportServer } from "./webtransport/server.js";
 import { AudioCapture, detectLoopbackDevice } from "./audio/index.js";
 import { InputLockManager } from "./inputlock/index.js";
 import { createInputLockBackend } from "./inputlock/backends.js";
@@ -76,6 +77,22 @@ async function main(): Promise<void> {
     onChange: (locked) => server?.notifyLockState(locked),
   });
 
+  // QUIC/WebTransport video listener, on the control port + 1.
+  //
+  // Optional by design: if it cannot start — no UDP path, port taken, native
+  // module missing — video simply stays on the WebSocket, which is also the
+  // only path that works for a browser without WebTransport or over a
+  // Cloudflare Tunnel. A failure here must never stop the agent.
+  let webtransport: WebtransportServer | null = new WebtransportServer({
+    port: config.port + 1,
+  });
+  try {
+    await webtransport.start();
+  } catch (err) {
+    process.stderr.write(`[webtransport] unavailable, video stays on WebSocket: ${String(err)}\n`);
+    webtransport = null;
+  }
+
   server = new ConnectionServer({
     secret: config.secret,
     nickname: config.nickname,
@@ -89,6 +106,16 @@ async function main(): Promise<void> {
     refreshHz,
     captureKind,
     initialBitrateKbps: 2500,
+    webtransport: webtransport
+      ? {
+          port: webtransport.port,
+          certHash: webtransport.certHash,
+          get hasSession() {
+            return webtransport!.hasSession;
+          },
+          send: (payload) => webtransport!.send(payload),
+        }
+      : undefined,
   });
 
   await server.listen();
@@ -100,6 +127,7 @@ async function main(): Promise<void> {
   const shutdown = async (): Promise<void> => {
     process.stdout.write("\nShutting down…\n");
     hotkey.stop();
+    await webtransport?.close();
     await server.close();
     process.exit(0);
   };

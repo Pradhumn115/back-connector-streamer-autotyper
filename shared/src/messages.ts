@@ -120,6 +120,29 @@ export const AgentInfoMessage = z.object({
   nickname: z.string(),
   /** Detected display refresh rate (Hz); the client uses it to target fps. */
   refreshHz: z.number().positive().optional(),
+  /**
+   * How to reach the agent's QUIC/WebTransport video listener, when it has one.
+   *
+   * Video over QUIC avoids TCP's head-of-line blocking: on the WebSocket a lost
+   * packet stalls every frame behind it while it is retransmitted, and for live
+   * video that retransmission is usually worthless because the frame is stale
+   * by the time it lands.
+   *
+   * The certificate is self-signed and verified by hash rather than by the
+   * browser's trust store, so `certHash` must reach the client for it to
+   * connect at all. Sent here, after authentication, rather than advertised
+   * publicly — only a client that already proved it knows the secret learns it.
+   *
+   * Absent when the agent could not start the listener, in which case the
+   * client simply keeps taking video over the WebSocket.
+   */
+  webtransport: z
+    .object({
+      port: z.number().int().positive(),
+      /** Lowercase hex SHA-256 of the DER certificate. */
+      certHash: z.string().regex(/^[0-9a-f]{64}$/),
+    })
+    .optional(),
 });
 
 export const AutotypeProgressMessage = z.object({

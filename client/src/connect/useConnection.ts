@@ -44,6 +44,8 @@ export interface AgentInfo {
   nickname: string;
   /** Agent's detected display refresh rate (Hz), if reported. */
   refreshHz?: number;
+  /** Where to reach the agent's QUIC video listener, when it has one. */
+  webtransport?: { port: number; certHash: string };
 }
 
 /** The latest frame, exposed as an object URL ready to draw. */
@@ -96,6 +98,14 @@ export interface UseConnection {
   /** Index into buildTargets()'s LAN/Tailscale/Tunnel order for the target
    *  that most recently completed auth, or null if not connected. */
   connectedTargetIndex: number | null;
+  /**
+   * Hostname of the agent currently connected to, without port or scheme.
+   *
+   * Needed to reach the agent's QUIC listener, which runs on a different port
+   * on the same host — and which must be addressed by the SAME host string the
+   * WebSocket used, since the certificate hash is bound to that listener.
+   */
+  connectedHost: string | null;
   agentInfo: AgentInfo | null;
   latestFrame: LatestFrame | null;
   autotype: AutotypeStatus;
@@ -207,6 +217,7 @@ function buildTargetSlots(p: ConnectParams): number[] {
 export function useConnection(opts: UseConnectionOptions = {}): UseConnection {
   const [status, setStatus] = useState<ConnectionStatus>("idle");
   const [connectedTargetIndex, setConnectedTargetIndex] = useState<number | null>(null);
+  const [connectedHost, setConnectedHost] = useState<string | null>(null);
   const [agentInfo, setAgentInfo] = useState<AgentInfo | null>(null);
   const [latestFrame, setLatestFrame] = useState<LatestFrame | null>(null);
   const [audio, setAudioState] = useState<AudioStatus>({
@@ -324,6 +335,7 @@ export function useConnection(opts: UseConnectionOptions = {}): UseConnection {
           screenHeight: msg.screenHeight,
           nickname: msg.nickname,
           refreshHz: msg.refreshHz,
+          webtransport: msg.webtransport,
         });
         break;
       case "autotypeProgress":
@@ -434,6 +446,11 @@ export function useConnection(opts: UseConnectionOptions = {}): UseConnection {
 
       ws.onopen = () => {
         everOpened = true;
+        try {
+          setConnectedHost(new URL(ws.url).hostname);
+        } catch {
+          setConnectedHost(null);
+        }
         if (connectTimerRef.current !== null) {
           window.clearTimeout(connectTimerRef.current);
           connectTimerRef.current = null;
@@ -624,6 +641,7 @@ export function useConnection(opts: UseConnectionOptions = {}): UseConnection {
   return {
     status,
     connectedTargetIndex,
+    connectedHost,
     agentInfo,
     latestFrame,
     autotype,

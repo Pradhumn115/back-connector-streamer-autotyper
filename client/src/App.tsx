@@ -5,6 +5,7 @@ import { useAudioTranscription } from "./audio/useAudioTranscription";
 import { useRemoteControl } from "./control/useRemoteControl";
 import { ScreenView, intervalForMode, type ContentRect } from "./view/ScreenView";
 import { useH264Decoder } from "./view/useH264Decoder";
+import { useWebtransport } from "./connect/useWebtransport";
 import { AutotypePanel } from "./autotype-panel/AutotypePanel";
 import { DiagnosticsPanel } from "./diagnostics/DiagnosticsPanel";
 
@@ -26,6 +27,10 @@ export function App() {
   // that paints straight onto the Classic canvas — same surface, same click
   // mapping, so remote control needs no special case for it.
   const h264 = useH264Decoder(canvasRef);
+  // Video can arrive over QUIC instead of the control socket. Frames carry the
+  // same envelope either way, so both feed the same decoder and the fallback is
+  // invisible to everything downstream.
+  const wt = useWebtransport(h264.pushFrame);
   const conn = useConnection({
     onAudioFrame: audioTx.pushFrame,
     onVideoFrame: h264.pushFrame,
@@ -51,6 +56,23 @@ export function App() {
   const connected = conn.status === "connected";
 
   const refreshHz = conn.agentInfo?.refreshHz;
+
+  // Attach to the agent's QUIC listener once it advertises one.
+  //
+  // Opportunistic: a browser without WebTransport, or a Cloudflare Tunnel with
+  // no UDP route, simply never connects and keeps taking video over the
+  // WebSocket — which the agent goes on sending until a session appears.
+  const wtInfo = conn.agentInfo?.webtransport;
+  const wtHost = conn.connectedHost;
+  useEffect(() => {
+    if (!connected || !wtInfo || !wtHost) {
+      wt.disconnect();
+      return;
+    }
+    wt.connect(wtHost, wtInfo.port, wtInfo.certHash);
+    return () => wt.disconnect();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connected, wtInfo?.port, wtInfo?.certHash, wtHost]);
 
   // On (re)connect, tell the agent the current mode so streaming starts, and
   // auto-run diagnostics once so the panel is populated without a manual press.
@@ -420,7 +442,9 @@ export function App() {
             hasFrame={conn.latestFrame !== null || h264.active}
             frameSource={
               h264.active
-                ? "H.264 over WebSocket"
+                ? wt.frames > 0
+                  ? "H.264 over QUIC"
+                  : "H.264 over WebSocket"
                 : conn.latestFrame !== null
                   ? "MJPEG"
                   : undefined

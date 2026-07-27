@@ -37,6 +37,16 @@ export interface ServerDeps {
   /** Starting point for the adaptive bitrate controller, in kbit/s. */
   initialBitrateKbps?: number;
   /**
+   * QUIC/WebTransport video listener, when one started. Frames prefer it and
+   * fall back to the WebSocket whenever no client is attached to it.
+   */
+  webtransport?: {
+    port: number;
+    certHash: string | null;
+    hasSession: boolean;
+    send(payload: Uint8Array): Promise<boolean>;
+  };
+  /**
    * Overrides the Classic backpressure threshold (see MAX_QUEUED_FRAME_BYTES).
    * Test-only escape hatch: a loopback socket drains far too fast to build a
    * real backlog on demand, so the drop path can only be exercised by moving
@@ -350,6 +360,13 @@ export class ConnectionServer {
         screenHeight: height,
         nickname: this.deps.nickname,
         refreshHz: this.deps.refreshHz,
+        // Sent only after auth: the certificate hash is what lets a client
+        // open a QUIC session to a self-signed listener, so it goes to
+        // clients that have already proved they know the secret.
+        webtransport:
+          this.deps.webtransport?.certHash != null
+            ? { port: this.deps.webtransport.port, certHash: this.deps.webtransport.certHash }
+            : undefined,
       });
     } catch (err) {
       this.send(ws, { type: "agentError", message: `screen size: ${String(err)}` });
@@ -407,6 +424,20 @@ export class ConnectionServer {
         image.data,
         image.keyframe ?? true,
       );
+
+      // Prefer QUIC when a client is attached to it: each frame gets its own
+      // stream, so loss in one never blocks the next, which TCP cannot offer.
+      // The same envelope goes over either transport, so the client decodes
+      // identically and the fallback is invisible.
+      const wt = this.deps.webtransport;
+      if (wt?.hasSession) {
+        void wt.send(new Uint8Array(buf)).then((sent) => {
+          // Nobody actually took it (session died between the check and the
+          // write): fall back rather than silently dropping the frame.
+          if (!sent && ws.readyState === ws.OPEN) ws.send(buf, { binary: true });
+        });
+        return;
+      }
       ws.send(buf, { binary: true });
     });
   }
