@@ -1,5 +1,27 @@
 # Back Connector — Streamer + Autotyper
 
+**Control your own machine from any browser — its screen at 60fps, its keyboard,
+its mouse, and its speakers. No relay server, no VPS, no account.**
+
+<!-- DEMO: replace with a recording of a phone driving the desktop.
+     ![Demo](docs/demo.gif) -->
+
+Run the **agent** on the machine you want to control. Open the **client** — a web
+app the agent serves itself — on any other device, including a phone.
+
+| | |
+|---|---|
+| **Video** | H.264, hardware-encoded, decoded in-browser with WebCodecs |
+| **Bandwidth** | ~7.4 KB/frame, down from ~267 KB on MJPEG — **35× less** |
+| **Transport** | QUIC/WebTransport where available, WebSocket everywhere else |
+| **Adapts** | bitrate, resolution and fps step down on a struggling link |
+| **Mobile** | touch gestures map to a trackpad; on-screen keyboard types to the remote |
+| **Audio** | hear the remote machine, and control its volume and mute |
+| **Extras** | human-like autotyper, local input lock, in-browser transcription |
+
+Everything runs directly between your two machines. Nothing is uploaded, and
+there is no service to sign up for.
+
 > ## ⚠️ Authorized use only
 > This tool streams a machine's screen and remotely controls its keyboard and
 > mouse. **Run it only on machines you personally own, or ones you have explicit
@@ -209,6 +231,39 @@ Either way, in the client:
 > `https://<agent-ip>:8443` in a tab tells you which: a cert warning → do step 3;
 > "can't reach this site" → wrong IP / network isolation (use the Ethernet or
 > Tailscale address instead).
+
+### Getting rid of the certificate warning for good
+
+The warning is not about your network — it appears on LAN too. The agent signs
+its own certificate, and browsers only trust certificates issued by a known
+authority. Accepting the warning stores an exception for **that one origin**,
+which is why `127.0.0.1`, your LAN IP and your Tailscale IP each ask separately.
+
+Three ways out, in order of how little work they are:
+
+1. **Tailscale certificates (free, no domain needed).** Enable
+   *HTTPS Certificates* on the [DNS page of the Tailscale admin
+   console](https://login.tailscale.com/admin/dns), then on the agent machine:
+
+   ```bash
+   tailscale cert <your-machine>.<tailnet>.ts.net
+   ```
+
+   That issues a real Let's Encrypt certificate. Point the agent at it with
+   `BCSA_TLS_CERT` / `BCSA_TLS_KEY` and connect using the `ts.net` name — no
+   warning on any device, including phones. It covers that hostname only, not
+   raw LAN IPs, but Tailscale routes directly when both devices are on the same
+   network, so there is no speed cost to using the name everywhere.
+
+2. **Cloudflare Tunnel** (`npm run tunnel`) already uses Cloudflare's own
+   trusted certificate, so that path never warns. The trade is that traffic
+   routes through Cloudflare, and QUIC is unavailable because a tunnel carries
+   HTTP only.
+
+3. **Trust the agent's certificate on the device.** The certificate names
+   `localhost`, `127.0.0.1`, and this machine's LAN and Tailscale addresses, so
+   importing `agent/.data/cert.pem` into the OS trust store works — but it has
+   to be done per device, and on iOS it is a multi-step profile install.
 
 Then:
 
