@@ -3,6 +3,7 @@ import type { StreamMode } from "@bcsa/shared";
 import { useConnection } from "./connect/useConnection";
 import { useAudioTranscription } from "./audio/useAudioTranscription";
 import { useAudioPlayback } from "./audio/useAudioPlayback";
+import { useRemoteSlider } from "./audio/useRemoteSlider";
 import { useRemoteControl } from "./control/useRemoteControl";
 import { useTouchControl } from "./control/useTouchControl";
 import { useSoftKeyboard } from "./control/useSoftKeyboard";
@@ -61,6 +62,9 @@ export function App() {
     },
     onVideoFrame: h264.pushFrame,
   });
+  // The agent's volume lives on another machine, so the slider needs to follow
+  // the finger locally and reconcile with the machine afterwards.
+  const agentVolume = useRemoteSlider(conn.outputVolume.level, conn.setOutputVolume);
   // Connect-bar form fields, seeded from cached params.
   const [lan, setLan] = useState<string>(conn.params.lanAddress);
   const [ts, setTs] = useState<string>(conn.params.tailscaleAddress);
@@ -429,12 +433,12 @@ export function App() {
                   min={0}
                   max={100}
                   step={1}
-                  value={conn.outputVolume.level}
-                  onChange={(e) => conn.setOutputVolume(Number(e.target.value))}
+                  value={agentVolume.value}
+                  onChange={(e) => agentVolume.onChange(Number(e.target.value))}
                   disabled={!connected || !conn.outputVolume.supported}
                 />
                 <span className="volume-value">
-                  {conn.outputVolume.supported ? `${conn.outputVolume.level}%` : "—"}
+                  {conn.outputVolume.supported ? `${agentVolume.value}%` : "—"}
                 </span>
               </label>
               <p className="hint">

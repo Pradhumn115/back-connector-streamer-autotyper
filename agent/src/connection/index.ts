@@ -16,6 +16,7 @@ import {
 import type { ScreenCapture } from "../capture/index.js";
 import type { AudioCapture } from "../audio/index.js";
 import type { VolumeController } from "../audio/volume.js";
+import { CoalescingApplier } from "../audio/coalesce.js";
 import type { InputController } from "../input/index.js";
 import { runAutotype, type TypingBackend } from "../autotyper/index.js";
 import type { InputLockManager } from "../inputlock/index.js";
@@ -188,6 +189,15 @@ export class ConnectionServer {
   private https: HttpsServer | null = null;
   private wss: WebSocketServer | null = null;
   private controller: WebSocket | null = null;
+  /**
+   * Applies volume changes, keeping only the newest of any burst.
+   *
+   * A dragged slider sends far more changes than the OS can apply, and the one
+   * that matters is the one it was released on. See CoalescingApplier.
+   */
+  private readonly volumeApplier = new CoalescingApplier<number>((level) =>
+    this.deps.volume.setLevel(level),
+  );
   private seq = 0;
   private audioSeq = 0;
   private autotyping = false;
@@ -740,8 +750,11 @@ export class ConnectionServer {
    * until something else refreshed it.
    */
   private async handleSetOutputVolume(level: number): Promise<void> {
-    await this.deps.volume.setLevel(level);
-    await this.sendVolumeState();
+    await this.volumeApplier.set(level);
+    // Only once the burst has drained: a read-back per position would double
+    // the per-change cost for values nobody will see, and the state that
+    // matters is where the machine ended up.
+    if (!this.volumeApplier.busy) await this.sendVolumeState();
   }
 
   private async handleSetOutputMute(muted: boolean): Promise<void> {
