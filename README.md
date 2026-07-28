@@ -23,37 +23,50 @@ view its screen, control its mouse/keyboard, and run a human-like autotyper.
 
 ## Features
 
-- **Screen streaming** — two modes, both over the one WebSocket:
+- **Screen streaming** — two modes:
   - **Video** (default) — **H.264**, hardware-encoded on the agent when a GPU
     encoder is available (VideoToolbox / NVENC / QSV / ddagrab), decoded in the
     browser with **WebCodecs** (`VideoDecoder`). It **auto-targets the agent's
-    display refresh rate** (30 / 60 / up to 120 fps) and is far lower-bandwidth
-    than sending images — good on the internet, not just LAN. Falls back to the
-    JPEG path automatically if H.264 encode or WebCodecs decode isn't available.
+    display refresh rate** (30 / 60 / up to 120 fps), and the **bitrate adapts to
+    the link** — degrading quality (and stepping down) when the connection can't
+    keep up. Falls back to JPEG automatically if H.264 encode or WebCodecs decode
+    isn't available.
   - **Screenshot** — periodic **JPEG** frames. Low-frequency, low-bandwidth, and
     works in any browser (no WebCodecs needed) — the simple, universal fallback.
+  - **Fit modes + fullscreen** — fit/fill/native display modes, and a fullscreen
+    view with the controls as a fading overlay.
+- **Two transports, auto-selected** — video rides **QUIC (WebTransport)** when the
+  browser and network allow it (lower latency, no TCP head-of-line blocking),
+  and transparently falls back to the **WebSocket (TCP)** otherwise. Control,
+  audio, and the JPEG path always use the WebSocket. The diagnostics panel shows
+  which transport won.
 - **Remote control** — mouse and keyboard forwarded to the agent, mapped 1:1
   (click, double-click, right-click, drag) with resolution-independent
-  coordinates.
+  coordinates. **Works from a phone** too — touch control and an on-screen
+  keyboard.
 - **Human-like autotyper** — types a block of text with adjustable cadence
   (base delay, jitter, occasional typo+correction), and can be **cancelled
   mid-run**.
-- **Lock agent's local input** — block the physical keyboard/mouse at the agent
-  so only the client drives it (with auto-release failsafes).
+- **Lock agent's local input** — block the physical keyboard **and mouse** at the
+  agent so only the client drives it (with auto-release failsafes). Works on
+  **Windows and macOS**; Linux is not yet supported.
+- **Agent audio** — **hear** the agent's system audio in the browser (off by
+  default), and **control the agent's volume / mute** from the client.
 - **Audio transcription** — a live text transcript of whatever is playing on the
   agent, produced by **Whisper running in your browser** (audio never leaves the
   client).
 - **Diagnostics panel** — one click self-checks both the browser and the agent
-  (connection, ffmpeg, capture engine, permissions, input-lock, audio device)
+  (connection, transport, ffmpeg, capture engine, permissions, input-lock, audio)
   and tells you exactly how to fix anything that's wrong.
-- **Direct & encrypted** — one TLS WebSocket (`wss://`), a shared secret, and no
-  relay/VPS. Works over LAN, Tailscale, or a Cloudflare Tunnel.
+- **Direct & encrypted** — TLS everywhere, a shared secret, and no relay/VPS.
+  Works over LAN, Tailscale, or a Cloudflare Tunnel.
 
-> **How video travels:** everything rides one TLS WebSocket. *Video* mode sends
-> H.264 (a keyframe plus deltas) and the browser decodes it with WebCodecs;
-> *Screenshot* mode sends whole JPEGs. There is no WebRTC/peer-connection — the
-> agent is already a reachable server, so H.264-over-WebSocket gives low bandwidth
-> without any SDP/ICE negotiation.
+> **How video travels:** control/audio/JPEG use one **TLS WebSocket**; H.264
+> video prefers a separate **QUIC/WebTransport** connection (on the control port
+> **+ 1**) and falls back to the WebSocket when QUIC isn't available (older
+> browser, or a Cloudflare Tunnel). There is no WebRTC/peer-connection — the agent
+> is already a reachable server, so it just sends an H.264 stream (keyframe +
+> deltas) and the browser decodes it with WebCodecs; no SDP/ICE negotiation.
 
 ## Layout
 
@@ -144,16 +157,34 @@ shared secret and a self-signed TLS certificate, then prints a banner:
 
 Override via env vars: `BCSA_PORT`, `BCSA_SECRET`, `BCSA_NICKNAME`.
 
-## Run the client (on your controlling device)
+> The agent also opens **`BCSA_PORT` + 1** (UDP) for the **QUIC/WebTransport**
+> video path. It's optional — if that port is blocked or the browser lacks
+> WebTransport, video falls back to the TCP WebSocket on the main port. Over
+> Tailscale both work; over a Cloudflare Tunnel only the WebSocket path is used.
 
-```bash
-npm run client       # starts Vite dev server (http://localhost:5173)
+## Open the client (on your controlling device)
+
+**Easiest — the agent serves the client.** Once the agent is running (and the
+client has been built via `npm run build`), just open the agent in a browser:
+
+```
+https://<agent-ip>:8443      e.g. https://192.168.0.119:8443
 ```
 
-In the client:
+Accept the self-signed cert once (see step 3 below), and the client app loads
+right there — no separate server needed. This is the recommended way.
+
+**For development** you can still run the Vite dev server instead:
+
+```bash
+npm run client       # http://localhost:5173, hot-reload
+```
+
+Either way, in the client:
 
 1. Enter the agent's **LAN address** (e.g. `192.168.0.119:8443`) and, if you'll
-   connect remotely, its **Tailscale address** and/or **Tunnel host** too.
+   connect remotely, its **Tailscale address** and/or **Tunnel host** too. (If you
+   opened the agent-served client, the address is already filled in.)
 2. Enter the **secret** from the agent banner.
 3. **Accept the agent's certificate first (LAN/Tailscale only).** Because the
    agent uses a self-signed cert, a browser will *silently refuse* the `wss://`
@@ -212,11 +243,16 @@ happen:
 - the agent process exits.
 On Windows, **Ctrl+Alt+Del** always bypasses the block as a final failsafe.
 
-**OS support:** Real blocking is implemented on **Windows** (via the Win32
-`BlockInput` API — no native build needed). On **macOS and Linux** it is **not
-implemented yet**, so the agent reports the feature as unsupported and the client
-disables the toggle — it never shows a false "locked" state. (Adding it needs a
-native `CGEventTap` on macOS / `EVIOCGRAB` on Linux.)
+**OS support:** blocking (keyboard **and** mouse) is implemented on:
+- **Windows** — the Win32 `BlockInput` API (no native build needed; the agent
+  must run **as Administrator**, else Windows silently refuses it).
+- **macOS** — a `CGEventTap` at the HID level (built by `npm run setup`; needs
+  Accessibility permission). It blocks physical input while the client's synthetic
+  input still passes through.
+
+On **Linux** it is **not implemented yet** (would need `EVIOCGRAB` on the
+`/dev/input` devices) — the agent reports it unsupported and the client disables
+the toggle, so it never shows a false "locked" state.
 
 > ⚠️ **Windows requires an elevated agent.** `BlockInput` is governed by
 > Windows' UIPI: from a normal (non-elevated) process it is silently refused and
