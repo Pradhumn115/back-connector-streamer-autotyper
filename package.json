@@ -1,5 +1,5 @@
 {
-  "name": "back-connector-streamer-autotyper",
+  "name": "beamdesk",
   "version": "0.1.0",
   "private": true,
   "description": "Personal remote-control tool: stream a machine's screen and control its keyboard/mouse from a web client, with a human-like autotyper.",

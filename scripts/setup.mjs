@@ -281,7 +281,7 @@ async function installLoopback() {
   }
 }
 
-console.log(`Back·Connector setup — OS: ${OS}\n`);
+console.log(`Beamdesk setup — OS: ${OS}\n`);
 
 const ffmpegOk = await ensure("ffmpeg", { required: true });
 await ensure("cloudflared", { required: false });

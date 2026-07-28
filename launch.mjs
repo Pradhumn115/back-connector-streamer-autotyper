@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Back·Connector launcher — one file to set everything up and pick what to run.
+// Beamdesk launcher — one file to set everything up and pick what to run.
 //
 //   node launch.mjs      (or: npm start)
 //
@@ -153,7 +153,7 @@ function printStatus() {
   const ffmpeg = have("ffmpeg", ["-version"]);
   const cloudflared = have("cloudflared");
   const mark = (ok) => (ok ? color("green", "✓") : color("red", "•"));
-  console.log(color("bold", "\n  Back·Connector\n"));
+  console.log(color("bold", "\n  Beamdesk\n"));
   console.log(
     `  ${mark(deps)} dependencies installed` +
       (missing.length ? color("dim", ` (missing: ${missing.slice(0, 3).join(", ")})`) : ""),

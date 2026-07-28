@@ -185,7 +185,7 @@ function printBanner(
   const { lan, tailscale } = localAddresses();
   const lines: string[] = [];
   lines.push("");
-  lines.push("  Back Connector — agent is running");
+  lines.push("  Beamdesk — agent is running");
   lines.push("  ─────────────────────────────────");
   lines.push(`  Port:        ${port}`);
   lines.push(`  Secret:      ${secret}`);

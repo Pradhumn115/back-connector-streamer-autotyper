@@ -225,7 +225,7 @@ export function App() {
         <div className={`brand ${connected ? "is-live" : ""}`}>
           <span className="brand-mark" />
           <span className="brand-name">
-            Back<b>·</b>Connector
+            beam<b>desk</b>
           </span>
           <span className="live-pill">{connected ? "LIVE" : "OFFLINE"}</span>
         </div>

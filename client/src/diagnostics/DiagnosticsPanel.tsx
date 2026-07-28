@@ -120,7 +120,7 @@ export function DiagnosticsPanel({
     const line = (r: Row) =>
       `[${r.status.toUpperCase()}] ${r.label} — ${r.detail}${r.fix ? `\n    fix: ${r.fix}` : ""}`;
     const report = [
-      "Back·Connector diagnostics",
+      "beamdesk diagnostics",
       new Date().toISOString(),
       "",
       "This browser:",

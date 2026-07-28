@@ -233,7 +233,7 @@ export class ConnectionServer {
         res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
         res.end(
           `<!doctype html><meta charset="utf-8">` +
-            `<title>Back Connector agent</title>` +
+            `<title>Beamdesk agent</title>` +
             `<body style="font-family:system-ui;max-width:32rem;margin:3rem auto;line-height:1.5">` +
             `<h1>✅ Agent reachable</h1>` +
             `<p>You've reached the <strong>${escapeHtml(this.deps.nickname)}</strong> agent and accepted its certificate.</p>` +

@@ -1,7 +1,12 @@
-# Back Connector — Streamer + Autotyper
+# beamdesk
 
 **Control your own machine from any browser — its screen at 60fps, its keyboard,
 its mouse, and its speakers. No relay server, no VPS, no account.**
+
+![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
+![Node](https://img.shields.io/badge/node-%E2%89%A520-brightgreen.svg)
+![Platforms](https://img.shields.io/badge/platforms-macOS%20%C2%B7%20Linux%20%C2%B7%20Windows-lightgrey.svg)
+![No relay](https://img.shields.io/badge/relay-none-success.svg)
 
 <!-- DEMO: replace with a recording of a phone driving the desktop.
      ![Demo](docs/demo.gif) -->
