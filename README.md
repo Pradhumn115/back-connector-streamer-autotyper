@@ -8,11 +8,12 @@ its mouse, and its speakers. No relay server, no VPS, no account.**
 ![Platforms](https://img.shields.io/badge/platforms-macOS%20%C2%B7%20Linux%20%C2%B7%20Windows-lightgrey.svg)
 ![No relay](https://img.shields.io/badge/relay-none-success.svg)
 
-<!-- DEMO: replace with a recording of a phone driving the desktop.
-     ![Demo](docs/demo.gif) -->
+![beamdesk streaming a desktop to a browser tab and typing into it remotely](docs/demo.gif)
 
 Run the **agent** on the machine you want to control. Open the **client** — a web
-app the agent serves itself — on any other device, including a phone.
+app the agent serves itself — on any other device, including a phone. Above: the
+browser client streaming a Mac over QUIC and typing into it with the human-like
+autotyper — no software installed on the controlling device.
 
 | | |
 |---|---|
