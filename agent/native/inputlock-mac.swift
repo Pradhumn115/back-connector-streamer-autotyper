@@ -70,9 +70,15 @@ let callback: CGEventTapCallBack = { proxy, type, event, _ in
 
 var sharedTap: CFMachPort?
 
+// Tap at the HID level, not the session level: a session tap can suppress mouse
+// events for *applications* but does NOT stop the window server from moving the
+// cursor (the cursor is driven from HID input below the session tap), so the
+// physical mouse still visibly worked while the keyboard was blocked. The HID
+// tap sits before cursor movement, so suppressing there actually freezes the
+// physical mouse. It needs Accessibility permission (same as before), not root.
 guard
     let tap = CGEvent.tapCreate(
-        tap: .cgSessionEventTap,
+        tap: .cghidEventTap,
         place: .headInsertEventTap,
         options: .defaultTap,
         eventsOfInterest: eventMask,
