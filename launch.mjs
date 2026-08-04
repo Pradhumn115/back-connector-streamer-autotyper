@@ -11,9 +11,11 @@ import { createInterface } from "node:readline";
 import { platform } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { installService, serviceStatus, uninstallService } from "./scripts/agent-service.mjs";
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const IS_WIN = platform() === "win32";
+const IS_MAC = platform() === "darwin";
 const AGENT_DATA_DIR = join(ROOT, "agent", ".data");
 const AGENT_PID_FILE = join(AGENT_DATA_DIR, "agent.pid");
 const AGENT_LOG_FILE = join(AGENT_DATA_DIR, "agent.log");
@@ -276,8 +278,34 @@ function spawnHiddenWindows() {
   return pid;
 }
 
+/** Service context passed to scripts/agent-service.mjs. */
+const SERVICE_CTX = { root: ROOT, logFile: AGENT_LOG_FILE };
+
+/** Is the 007 login-autostart service installed and currently running? */
+function bondIsActive() {
+  try {
+    const svc = serviceStatus(SERVICE_CTX);
+    return svc.installed && svc.running;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Both the plain background mode and 007 bind the same port (8443), so only
+ * one may run the agent at a time — this is the same EADDRINUSE crash we hit
+ * running both together during testing. Callers check this before starting
+ * the agent any other way while 007 owns it.
+ */
+function refuseIfBondActive() {
+  if (!bondIsActive()) return false;
+  console.log(color("red", "\n  007 is already running the agent (login service). Use 'M (retire 007)' first.\n"));
+  return true;
+}
+
 /** Run the agent detached so it outlives this launcher and its terminal. */
 async function startAgentBackground() {
+  if (refuseIfBondActive()) return;
   const running = backgroundAgentPid();
   if (running) {
     console.log(color("amber", `\n  Already running (pid ${running}). Log: ${AGENT_LOG_FILE}\n`));
@@ -289,13 +317,58 @@ async function startAgentBackground() {
   console.log(color("green", `\n  Started in background (pid ${pid}). Log: ${AGENT_LOG_FILE}\n`));
 }
 
-/** Report whether the background agent is running. */
+/** Report whether the background agent is running, via either mechanism. */
 function agentStatus() {
   const pid = backgroundAgentPid();
   if (pid) {
-    console.log(color("green", `\n  Running (pid ${pid}). Log: ${AGENT_LOG_FILE}\n`));
+    console.log(color("green", `\n  Plain background: running (pid ${pid}). Log: ${AGENT_LOG_FILE}`));
   } else {
-    console.log(color("dim", "\n  Not running.\n"));
+    console.log(color("dim", "\n  Plain background: not running."));
+  }
+  try {
+    const svc = serviceStatus(SERVICE_CTX);
+    if (svc.installed && svc.running) {
+      console.log(color("green", `  007 (login autostart): running${svc.pid ? ` (pid ${svc.pid})` : ""}.\n`));
+    } else if (svc.installed) {
+      console.log(color("amber", "  007 (login autostart): installed, not currently running.\n"));
+    } else {
+      console.log(color("dim", "  007 (login autostart): not installed.\n"));
+    }
+  } catch (err) {
+    console.log(color("red", `  007 status check failed: ${err.message}\n`));
+  }
+}
+
+/** Install 007: stop any plain-background instance, then install + start the login service. */
+function installBond() {
+  if (backgroundAgentPid()) stopAgentBackground();
+  try {
+    installService(SERVICE_CTX);
+    console.log(
+      color("green", `\n  007 is live. Starts automatically at login, restarts if it crashes. Log: ${AGENT_LOG_FILE}\n`),
+    );
+    if (IS_MAC) {
+      console.log(
+        color(
+          "amber",
+          "  macOS note: a permission you granted to Terminal (Accessibility, Screen Recording) doesn't carry over\n" +
+            "  to a launchd-run process — it may need granting again to whatever binary shows up in the log below if\n" +
+            "  the agent keeps restarting. Check Agent status / the log if it doesn't come up.\n",
+        ),
+      );
+    }
+  } catch (err) {
+    console.log(color("red", `\n  Failed to install: ${err.message}\n`));
+  }
+}
+
+/** Retire 007: stop it and remove the login-autostart registration. */
+function retireBond() {
+  try {
+    uninstallService(SERVICE_CTX);
+    console.log(color("green", "\n  007 has been retired. No longer starts at login.\n"));
+  } catch (err) {
+    console.log(color("red", `\n  Failed to retire: ${err.message}\n`));
   }
 }
 
@@ -332,10 +405,12 @@ const MENU = `
   ${color("amber", "3")}  Run agent (background)${color("dim", " keeps running after this terminal closes")}
   ${color("amber", "4")}  Agent status          ${color("dim", "is the background agent running?")}
   ${color("amber", "5")}  Stop background agent
-  ${color("amber", "6")}  Run client            ${color("dim", "control another machine from your browser")}
-  ${color("amber", "7")}  Run tunnel            ${color("dim", "expose the agent over Cloudflare (remote)")}
-  ${color("amber", "8")}  Rebuild               ${color("dim", "recompile all packages")}
-  ${color("amber", "9")}  Local test            ${color("dim", "agent + client on this machine")}
+  ${color("amber", "6")}  007 James Bond        ${color("dim", "auto-start on login, survives reboot + crashes")}
+  ${color("amber", "7")}  M (retire 007)        ${color("dim", "stop + remove the login-autostart service")}
+  ${color("amber", "8")}  Run client            ${color("dim", "control another machine from your browser")}
+  ${color("amber", "9")}  Run tunnel            ${color("dim", "expose the agent over Cloudflare (remote)")}
+  ${color("amber", "10")} Rebuild               ${color("dim", "recompile all packages")}
+  ${color("amber", "11")} Local test            ${color("dim", "agent + client on this machine")}
   ${color("amber", "q")}  Quit
 `;
 
@@ -347,19 +422,21 @@ async function main() {
     const choice = (await ask(color("amber", "  › "))).trim().toLowerCase();
     switch (choice) {
       case "1": await fullSetup(); break;
-      case "2": await npm("agent"); break;
+      case "2": if (!refuseIfBondActive()) await npm("agent"); break;
       case "3": await startAgentBackground(); break;
       case "4": agentStatus(); break;
       case "5": stopAgentBackground(); break;
-      case "6": await npm("client"); break;
-      case "7": await npm("tunnel"); break;
-      case "8": await npm("build"); break;
-      case "9": await localTest(); break;
+      case "6": installBond(); break;
+      case "7": retireBond(); break;
+      case "8": await npm("client"); break;
+      case "9": await npm("tunnel"); break;
+      case "10": await npm("build"); break;
+      case "11": await localTest(); break;
       case "q": case "quit": case "exit":
         rl.close();
         return;
       default:
-        console.log(color("red", "  Pick 1–9 or q."));
+        console.log(color("red", "  Pick 1–11 or q."));
     }
   }
 }

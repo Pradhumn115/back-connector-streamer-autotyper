@@ -121,6 +121,11 @@ Both the plain background mode and the 007 service bind port 8443, so only one m
 
 Option 4 now reports both mechanisms in one call: plain-background PID-daemon state, and 007's `{ installed, running, pid? }`, since they're ultimately the same agent and a user shouldn't need to remember two different status commands.
 
+## Findings from live macOS testing
+
+- **PATH**: the first install attempt failed immediately (`env: node: No such file or directory`) — launchd's login-agent PATH is much smaller than an interactive shell's and doesn't include Homebrew's bin directory, so npm's own `#!/usr/bin/env node` shebang couldn't resolve `node`. Fixed by baking a minimal-but-sufficient `PATH` into the service definition (`EnvironmentVariables` in the plist, `Environment=PATH=` in the systemd unit) built from `dirname(npmPath)` plus the standard Homebrew/system directories — deliberately not the full inherited `PATH`, which on a dev machine is stuffed with unrelated tool-specific entries that shouldn't end up baked into a persistent system file.
+- **KeepAlive verified working**: with the PATH fix in place, the agent still crashed (exit 134) — macOS's Accessibility permission, previously granted to Terminal for interactive runs, does not carry over to a process launchd invokes directly. `launchctl list` showed `LastExitStatus` and a changing `PID` across repeated checks, confirming `KeepAlive`/`SuccessfulExit: false` was correctly retrying rather than giving up. This TCC permission gate is expected macOS behavior (not something installable/grantable by this code — it requires the user to grant Accessibility/Screen Recording to the specific binary in System Settings) — `installBond()` prints a note about it on macOS so it isn't a silent, confusing failure loop.
+
 ## Testing plan
 
 Manual, since `launch.mjs` has no existing test harness. **This environment is macOS-only** — the Linux and Windows paths (systemd unit generation/commands, Task Scheduler XML generation/commands) are implemented per each platform's documented CLI behavior and reviewed for correctness, but were not executed. That gap is called out explicitly rather than claimed as tested.
