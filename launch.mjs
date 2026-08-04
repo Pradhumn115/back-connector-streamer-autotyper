@@ -6,7 +6,7 @@
 // Shows a menu: full setup, run the agent, run the client, run the tunnel,
 // rebuild, or a local agent+client test. Dependency-free and cross-platform.
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, openSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { platform } from "node:os";
 import { dirname, join } from "node:path";
@@ -14,6 +14,9 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const IS_WIN = platform() === "win32";
+const AGENT_DATA_DIR = join(ROOT, "agent", ".data");
+const AGENT_PID_FILE = join(AGENT_DATA_DIR, "agent.pid");
+const AGENT_LOG_FILE = join(AGENT_DATA_DIR, "agent.log");
 
 const C = {
   reset: "\x1b[0m", dim: "\x1b[2m", bold: "\x1b[1m",
@@ -205,15 +208,84 @@ async function localTest() {
   agent.kill();
 }
 
+/**
+ * PID of the detached agent, or null if there's no PID file / it's stale.
+ *
+ * A stale PID file is the normal state after the machine reboots or the
+ * process is killed out-of-band, so this also deletes the file when the
+ * process it names is gone — callers don't have to remember to clean up.
+ */
+function backgroundAgentPid() {
+  if (!existsSync(AGENT_PID_FILE)) return null;
+  const pid = Number(readFileSync(AGENT_PID_FILE, "utf8").trim());
+  if (!Number.isInteger(pid)) {
+    unlinkSync(AGENT_PID_FILE);
+    return null;
+  }
+  try {
+    process.kill(pid, 0); // existence check only; doesn't actually signal the process
+    return pid;
+  } catch {
+    unlinkSync(AGENT_PID_FILE);
+    return null;
+  }
+}
+
+/** Run the agent detached so it outlives this launcher and its terminal. */
+async function startAgentBackground() {
+  const running = backgroundAgentPid();
+  if (running) {
+    console.log(color("amber", `\n  Already running (pid ${running}). Log: ${AGENT_LOG_FILE}\n`));
+    return;
+  }
+  mkdirSync(AGENT_DATA_DIR, { recursive: true });
+  const out = openSync(AGENT_LOG_FILE, "a");
+  const child = spawn("npm", ["run", "agent"], {
+    cwd: ROOT,
+    shell: IS_WIN,
+    detached: true,
+    windowsHide: true,
+    stdio: ["ignore", out, out],
+  });
+  child.unref();
+  writeFileSync(AGENT_PID_FILE, String(child.pid));
+  console.log(color("green", `\n  Started in background (pid ${child.pid}). Log: ${AGENT_LOG_FILE}\n`));
+}
+
+/** Report whether the background agent is running. */
+function agentStatus() {
+  const pid = backgroundAgentPid();
+  if (pid) {
+    console.log(color("green", `\n  Running (pid ${pid}). Log: ${AGENT_LOG_FILE}\n`));
+  } else {
+    console.log(color("dim", "\n  Not running.\n"));
+  }
+}
+
+/** Stop the background agent, if any. */
+function stopAgentBackground() {
+  const pid = backgroundAgentPid();
+  if (!pid) {
+    console.log(color("dim", "\n  Not running.\n"));
+    return;
+  }
+  process.kill(pid);
+  unlinkSync(AGENT_PID_FILE);
+  console.log(color("green", `\n  Stopped (pid ${pid}).\n`));
+}
+
 const MENU = `
   ${color("bold", "What do you want to run?")}
 
-  ${color("amber", "1")}  Full setup        install deps + prerequisites + build ${color("dim", "(run first)")}
-  ${color("amber", "2")}  Run agent         ${color("dim", "this machine gets controlled + streamed")}
-  ${color("amber", "3")}  Run client        ${color("dim", "control another machine from your browser")}
-  ${color("amber", "4")}  Run tunnel        ${color("dim", "expose the agent over Cloudflare (remote)")}
-  ${color("amber", "5")}  Rebuild           ${color("dim", "recompile all packages")}
-  ${color("amber", "6")}  Local test        ${color("dim", "agent + client on this machine")}
+  ${color("amber", "1")}  Full setup            install deps + prerequisites + build ${color("dim", "(run first)")}
+  ${color("amber", "2")}  Run agent             ${color("dim", "this machine gets controlled + streamed")}
+  ${color("amber", "3")}  Run agent (background)${color("dim", " keeps running after this terminal closes")}
+  ${color("amber", "4")}  Agent status          ${color("dim", "is the background agent running?")}
+  ${color("amber", "5")}  Stop background agent
+  ${color("amber", "6")}  Run client            ${color("dim", "control another machine from your browser")}
+  ${color("amber", "7")}  Run tunnel            ${color("dim", "expose the agent over Cloudflare (remote)")}
+  ${color("amber", "8")}  Rebuild               ${color("dim", "recompile all packages")}
+  ${color("amber", "9")}  Local test            ${color("dim", "agent + client on this machine")}
   ${color("amber", "q")}  Quit
 `;
 
@@ -226,15 +298,18 @@ async function main() {
     switch (choice) {
       case "1": await fullSetup(); break;
       case "2": await npm("agent"); break;
-      case "3": await npm("client"); break;
-      case "4": await npm("tunnel"); break;
-      case "5": await npm("build"); break;
-      case "6": await localTest(); break;
+      case "3": await startAgentBackground(); break;
+      case "4": agentStatus(); break;
+      case "5": stopAgentBackground(); break;
+      case "6": await npm("client"); break;
+      case "7": await npm("tunnel"); break;
+      case "8": await npm("build"); break;
+      case "9": await localTest(); break;
       case "q": case "quit": case "exit":
         rl.close();
         return;
       default:
-        console.log(color("red", "  Pick 1–6 or q."));
+        console.log(color("red", "  Pick 1–9 or q."));
     }
   }
 }
