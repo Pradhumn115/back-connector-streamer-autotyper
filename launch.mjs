@@ -262,14 +262,27 @@ function agentStatus() {
   }
 }
 
-/** Stop the background agent, if any. */
+/**
+ * Stop the background agent, if any.
+ *
+ * `npm run agent` spawns further children (npm's own child, then tsx), and
+ * npm does not forward SIGTERM to them — signaling only the npm pid we
+ * recorded leaves the real agent process running. `detached: true` made that
+ * pid a new process group leader, so signaling the whole group (the negative
+ * pid) on POSIX reaches every descendant. Windows has no process groups, so
+ * `taskkill /T` walks the process tree instead.
+ */
 function stopAgentBackground() {
   const pid = backgroundAgentPid();
   if (!pid) {
     console.log(color("dim", "\n  Not running.\n"));
     return;
   }
-  process.kill(pid);
+  if (IS_WIN) {
+    spawnSync("taskkill", ["/pid", String(pid), "/T", "/F"], { stdio: "ignore" });
+  } else {
+    process.kill(-pid);
+  }
   unlinkSync(AGENT_PID_FILE);
   console.log(color("green", `\n  Stopped (pid ${pid}).\n`));
 }
