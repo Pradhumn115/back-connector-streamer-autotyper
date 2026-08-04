@@ -21,8 +21,9 @@ Only the **agent** gets a background mode. Client, tunnel, and other menu option
 
 - **`startAgentBackground()`**
   - Checks liveness first (see below). If already running, prints `already running (pid N), see agent/.data/agent.log` and does nothing.
-  - Otherwise spawns `npm run agent` with `detached: true`, `windowsHide: true`, stdout/stderr redirected to an fd opened on the log file (append mode), and calls `.unref()` so the parent can exit without taking the child down.
-  - Writes the child's PID to the PID file, prints confirmation with the log path.
+  - Otherwise spawns `npm run agent` in the background via a platform-specific helper (see below), writes the returned PID to the PID file, prints confirmation with the log path.
+- **`spawnDetachedPosix()`** (macOS/Linux) — `spawn("npm", ["run", "agent"], { detached: true, stdio: [...file] })` + `.unref()`.
+- **`spawnHiddenWindows()`** (Windows) — see "Windows console-window fix" below. `detached: true` + `windowsHide: true` on Windows pops a real console window for this process tree (confirmed: nodejs/node#21825, #36808 — `detached` forces the child to get its own console on Windows, and `windowsHide` doesn't reliably suppress that once stdio is redirected to real file handles rather than `"ignore"`). Instead, launches via `powershell.exe -Command "Start-Process -FilePath cmd.exe -ArgumentList '/c','cd /d ROOT && npm run agent >> LOG 2>&1' -WindowStyle Hidden -PassThru"`, which genuinely hides the window and returns the real PID via `-PassThru` so `stopAgentBackground`'s `taskkill /T /F` can still kill the whole tree.
 - **`agentStatus()`**
   - Reads the PID file. If absent, reports "not running."
   - If present, checks liveness with `process.kill(pid, 0)` (throws `ESRCH` if the process doesn't exist — works cross-platform in Node, including Windows).

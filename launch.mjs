@@ -231,6 +231,51 @@ function backgroundAgentPid() {
   }
 }
 
+/**
+ * Launch `npm run agent` detached on macOS/Linux.
+ *
+ * `detached: true` + `.unref()` is sufficient here: the child becomes its
+ * own session/process group leader and outlives this process once it exits.
+ */
+function spawnDetachedPosix() {
+  const out = openSync(AGENT_LOG_FILE, "a");
+  const child = spawn("npm", ["run", "agent"], {
+    cwd: ROOT,
+    detached: true,
+    stdio: ["ignore", out, out],
+  });
+  child.unref();
+  return child.pid;
+}
+
+/**
+ * Launch `npm run agent` hidden on Windows.
+ *
+ * `detached: true` forces Node to give the child its own console window on
+ * Windows, and `windowsHide` does not reliably suppress that once stdio is
+ * redirected to real file handles instead of `"ignore"` (nodejs/node#21825,
+ * #36808) — that combination is what popped a visible console for this
+ * menu option. PowerShell's `Start-Process -WindowStyle Hidden` genuinely
+ * hides the window; `-PassThru` hands back the real PID so `taskkill /T`
+ * can still stop the whole tree later. Redirection is done by cmd's own
+ * `>>`/`2>&1`, not Start-Process's -Redirect* params, because those require
+ * stdout/stderr to be different files and we want one shared log.
+ */
+function spawnHiddenWindows() {
+  const cmdLine = `cd /d "${ROOT}" && npm run agent >> "${AGENT_LOG_FILE}" 2>&1`;
+  const psCommand =
+    `$p = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', '${cmdLine.replace(/'/g, "''")}' ` +
+    `-WindowStyle Hidden -PassThru; $p.Id`;
+  const result = spawnSync("powershell.exe", ["-NoProfile", "-WindowStyle", "Hidden", "-Command", psCommand], {
+    encoding: "utf8",
+  });
+  const pid = Number(result.stdout.trim());
+  if (!Number.isInteger(pid)) {
+    throw new Error(`Failed to start agent via PowerShell: ${result.stderr || result.stdout}`);
+  }
+  return pid;
+}
+
 /** Run the agent detached so it outlives this launcher and its terminal. */
 async function startAgentBackground() {
   const running = backgroundAgentPid();
@@ -239,17 +284,9 @@ async function startAgentBackground() {
     return;
   }
   mkdirSync(AGENT_DATA_DIR, { recursive: true });
-  const out = openSync(AGENT_LOG_FILE, "a");
-  const child = spawn("npm", ["run", "agent"], {
-    cwd: ROOT,
-    shell: IS_WIN,
-    detached: true,
-    windowsHide: true,
-    stdio: ["ignore", out, out],
-  });
-  child.unref();
-  writeFileSync(AGENT_PID_FILE, String(child.pid));
-  console.log(color("green", `\n  Started in background (pid ${child.pid}). Log: ${AGENT_LOG_FILE}\n`));
+  const pid = IS_WIN ? spawnHiddenWindows() : spawnDetachedPosix();
+  writeFileSync(AGENT_PID_FILE, String(pid));
+  console.log(color("green", `\n  Started in background (pid ${pid}). Log: ${AGENT_LOG_FILE}\n`));
 }
 
 /** Report whether the background agent is running. */
