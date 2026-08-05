@@ -131,16 +131,23 @@ const DROP_LOG_THROTTLE_MS = 5000;
  */
 const BITRATE_MIN_KBPS = 400;
 /**
- * Ceiling, raised for LAN.
+ * Ceiling at the 1920px baseline this was originally tuned against, raised
+ * for LAN.
  *
  * Resolution and bitrate are not independent: spreading 6 Mbit/s over a native
  * desktop looks SOFTER than the same bits over 1280px, because quality is
- * bits-per-pixel. Raising the frame size without raising this would have made
- * the picture worse, not better. The controller still walks down from here on
- * any link that cannot sustain it, so a constrained connection never pays for
- * the higher ceiling.
+ * bits-per-pixel. The encode width now defaults to the agent's actual screen
+ * width instead of a fixed 1920 (see agent/src/index.ts), so this baseline is
+ * scaled by bitrateCeilingKbps() below for a session that started wider —
+ * otherwise a good link on a high-resolution display would still spread this
+ * same 20000kbps over far more pixels than it was tuned for, undoing the
+ * point of streaming at native resolution at all. The controller still walks
+ * down from here on any link that cannot sustain it, so a constrained
+ * connection never pays for the higher ceiling.
  */
-const BITRATE_MAX_KBPS = 20000;
+const BITRATE_MAX_KBPS_AT_1920 = 20000;
+/** Upper bound on the scaled ceiling, so an unusually large display doesn't imply a bitrate no real network can sustain. */
+const BITRATE_MAX_KBPS_CAP = 60000;
 const BITRATE_DOWN_FACTOR = 0.6;
 const BITRATE_UP_FACTOR = 1.15;
 
@@ -148,22 +155,60 @@ const BITRATE_UP_FACTOR = 1.15;
 const ADAPT_INTERVAL_MS = 2000;
 
 /**
- * Frame widths to fall back through when bitrate alone cannot rescue the link,
- * and the frame rates paired with them.
+ * Each resolution rung is this fraction of the previous rung's width.
  *
- * Ordered best-first. Resolution is given up before frame rate at the top of
- * the ladder, because for a remote desktop a slightly smaller sharp image beats
- * a large mushy one; frame rate is only halved once the picture is already
- * small, where smoothness starts to matter more than detail.
+ * Chosen small deliberately: Chrome's own WebRTC video pipeline (the
+ * QualityScaler behind `degradationPreference`) scales resolution in
+ * continuous, similarly-sized steps driven by encoder feedback, rather than
+ * jumping between a handful of fixed named resolutions the way traditional
+ * on-demand ABR ladders (HLS/DASH) do — a live remote-control picture has no
+ * time to smooth over a big visible jump the way a buffered video player
+ * does. 0.8 gives a fine-grained descent (roughly a dozen rungs from 1920 down
+ * to the 320px floor) instead of a couple of large cuts.
  */
-const QUALITY_LADDER: ReadonlyArray<{ width: number; fps: number }> = [
-  { width: 1920, fps: 60 },
-  { width: 1920, fps: 30 },
-  { width: 1280, fps: 30 },
-  { width: 960, fps: 30 },
-  { width: 960, fps: 15 },
-  { width: 640, fps: 15 },
-];
+const LADDER_WIDTH_STEP = 0.8;
+/** Once width has dropped to this fraction of the starting width, fps may also drop to LADDER_LOW_FPS. */
+const LADDER_LOW_FPS_WIDTH_FRACTION = 0.5;
+const LADDER_MID_FPS = 30;
+const LADDER_LOW_FPS = 15;
+/** Matches H264Capture.setScale's own floor. */
+const LADDER_MIN_WIDTH = 320;
+
+/**
+ * Builds the resolution/fps fallback ladder relative to the width and fps a
+ * session actually started at, rather than a fixed absolute table.
+ *
+ * A fixed table starting at 1920 broke once maxWidth started defaulting to
+ * the agent's native screen width: the very first step down would drop a
+ * larger native resolution straight to 1920 in one jump, and climbing back up
+ * could only ever reach 1920 again — the session's real starting resolution
+ * was gone for good once any congestion happened at all, even briefly.
+ *
+ * Same philosophy as before — resolution is given up before frame rate,
+ * because a slightly smaller sharp image beats a large mushy one, and frame
+ * rate only drops once the picture is already small — but as a continuous
+ * proportional descent (see LADDER_WIDTH_STEP) instead of a few large,
+ * perceptible jumps. Widths are kept even (yuv420p needs it).
+ */
+function buildQualityLadder(
+  startWidth: number,
+  startFps: number,
+): ReadonlyArray<{ width: number; fps: number }> {
+  const bestFps = Math.min(60, startFps);
+  const rungs: Array<{ width: number; fps: number }> = [{ width: startWidth, fps: bestFps }];
+  if (bestFps > LADDER_MID_FPS) rungs.push({ width: startWidth, fps: LADDER_MID_FPS });
+
+  let width = startWidth;
+  let fps = Math.min(bestFps, LADDER_MID_FPS);
+  for (;;) {
+    const next = Math.max(LADDER_MIN_WIDTH, Math.round((width * LADDER_WIDTH_STEP) / 2) * 2);
+    if (next === width) break; // rounding has converged at the floor
+    width = next;
+    if (width <= startWidth * LADDER_LOW_FPS_WIDTH_FRACTION) fps = LADDER_LOW_FPS;
+    rungs.push({ width, fps });
+  }
+  return rungs;
+}
 
 /**
  * Consecutive healthy checks required before climbing back up a rung.
@@ -213,7 +258,9 @@ export class ConnectionServer {
   private adaptTimer: NodeJS.Timeout | null = null;
   /** Worst queue depth seen since the last adaptation decision. */
   private peakBacklog = 0;
-  /** Index into QUALITY_LADDER; 0 is best. */
+  /** Built once, from the width/fps the session actually started at — see buildQualityLadder. */
+  private ladder: ReadonlyArray<{ width: number; fps: number }> | null = null;
+  /** Index into this.ladder; 0 is best. */
   private ladderRung = 0;
   /** Consecutive healthy checks, for cautious recovery up the ladder. */
   private healthyChecks = 0;
@@ -339,6 +386,33 @@ export class ConnectionServer {
     if (ws.readyState === ws.OPEN) ws.send(encodeMessage(msg));
   }
 
+  /** Lazily built from the width/fps the session actually started at (see buildQualityLadder). */
+  private getLadder(): ReadonlyArray<{ width: number; fps: number }> {
+    if (!this.ladder) {
+      const startWidth = this.deps.capture.encodeWidth ?? 1920;
+      this.ladder = buildQualityLadder(startWidth, this.deps.refreshHz);
+    }
+    return this.ladder;
+  }
+
+  /**
+   * Bitrate ceiling for the resolution this session actually started at.
+   *
+   * Scales with pixel AREA relative to the 1920px baseline
+   * BITRATE_MAX_KBPS_AT_1920 was tuned against — area, not width, is what
+   * "bits per pixel" means, and for a fixed aspect ratio area scales with
+   * width squared. Never scaled below the baseline, so a smaller-than-1920
+   * display keeps exactly the ceiling it already had. Falls back to the
+   * baseline when the active capture engine exposes no encodeWidth (the
+   * screenshot-desktop path, which has no bitrate control to begin with).
+   */
+  private bitrateCeilingKbps(): number {
+    const width = this.deps.capture.encodeWidth;
+    if (!width) return BITRATE_MAX_KBPS_AT_1920;
+    const scaled = Math.round(BITRATE_MAX_KBPS_AT_1920 * (width / 1920) ** 2);
+    return Math.min(BITRATE_MAX_KBPS_CAP, Math.max(BITRATE_MAX_KBPS_AT_1920, scaled));
+  }
+
   /**
    * Adjusts encoder bitrate to what the link is actually carrying.
    *
@@ -378,6 +452,7 @@ export class ConnectionServer {
       this.dropsSinceAdapt = 0;
 
       const congested = drops > 0 || backlog > ADAPT_BACKLOG_BYTES;
+      const ceiling = this.bitrateCeilingKbps();
 
       // Resolution and frame rate move only when bitrate has run out of room.
       // Bitrate is the cheap, invisible lever; changing frame size reopens the
@@ -386,11 +461,11 @@ export class ConnectionServer {
       if (this.deps.capture.setScale) {
         if (congested && this.bitrateKbps <= BITRATE_MIN_KBPS) {
           this.healthyChecks = 0;
-          if (this.ladderRung < QUALITY_LADDER.length - 1) {
+          if (this.ladderRung < this.getLadder().length - 1) {
             this.ladderRung++;
             this.applyRung("still congested at the bitrate floor");
           }
-        } else if (!congested && this.bitrateKbps >= BITRATE_MAX_KBPS) {
+        } else if (!congested && this.bitrateKbps >= ceiling) {
           // Only climb back when bitrate is already maxed AND the link has been
           // quiet for a while: stepping up prematurely re-creates the
           // congestion that forced the step down.
@@ -408,7 +483,7 @@ export class ConnectionServer {
       const previous = this.bitrateKbps;
       const next = congested
         ? Math.max(BITRATE_MIN_KBPS, Math.round(previous * BITRATE_DOWN_FACTOR))
-        : Math.min(BITRATE_MAX_KBPS, Math.round(previous * BITRATE_UP_FACTOR));
+        : Math.min(ceiling, Math.round(previous * BITRATE_UP_FACTOR));
 
       // Ignore changes too small to matter: every adjustment reopens the
       // encoder and emits a keyframe, which costs far more bytes than a 3%
@@ -419,7 +494,7 @@ export class ConnectionServer {
       // 10%, so it was skipped forever, and the quality ladder below (which
       // only engages AT the floor) could never trigger no matter how congested
       // the link became.
-      const atBound = next === BITRATE_MIN_KBPS || next === BITRATE_MAX_KBPS;
+      const atBound = next === BITRATE_MIN_KBPS || next === ceiling;
       if (!atBound && Math.abs(next - previous) < previous * 0.1) return;
       if (next === previous) return;
 
@@ -435,7 +510,7 @@ export class ConnectionServer {
 
   /** Applies the current ladder rung to the encoder and says why. */
   private applyRung(reason: string): void {
-    const rung = QUALITY_LADDER[this.ladderRung];
+    const rung = this.getLadder()[this.ladderRung];
     this.deps.capture.setScale?.(rung.width, rung.fps);
     process.stderr.write(
       `[adapt] quality -> ${rung.width}px @ ${rung.fps}fps (${reason})\n`,

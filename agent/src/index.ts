@@ -61,12 +61,19 @@ async function main(): Promise<void> {
 
   // Prefer the continuous ffmpeg pipeline (can sustain ~30fps); fall back to the
   // per-frame screenshot loop (a few fps) when ffmpeg isn't installed.
-  // Encode width. 1920 by default rather than the display's native size:
-  // quality is bits per pixel, so a native-resolution encode at the same
-  // bitrate looks SOFTER, and it costs proportionally more to encode. 1920 is
-  // already comfortably readable for remote control. Raise it — up to native —
-  // with BCSA_MAX_WIDTH on a machine and link that can afford it.
-  const maxWidth = process.env.BCSA_MAX_WIDTH ? Number(process.env.BCSA_MAX_WIDTH) : 1920;
+  // Encode width defaults to the agent's actual screen width rather than a
+  // fixed 1920: quality is bits per pixel, and both the bitrate ceiling and
+  // the quality ladder in connection/index.ts now scale with whatever this
+  // ends up being (see BITRATE_MAX_KBPS_AT_1920 and buildQualityLadder there),
+  // so a good link on a high-resolution display gets a correspondingly higher
+  // ceiling instead of spreading a fixed budget over more pixels than it was
+  // tuned for. Falls back to 1920 if screen size can't be read. BCSA_MAX_WIDTH
+  // still overrides either way, e.g. to deliberately cap a weak link.
+  const nativeWidth = await input
+    .screenSize()
+    .then((s) => s.width)
+    .catch(() => 1920);
+  const maxWidth = process.env.BCSA_MAX_WIDTH ? Number(process.env.BCSA_MAX_WIDTH) : nativeWidth;
   const refreshHz = detectRefreshHz();
   let capture: ScreenCapture;
   let captureKind: string;
