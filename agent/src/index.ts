@@ -19,6 +19,7 @@ import { detectVolumeController } from "./audio/volume.js";
 import { InputLockManager } from "./inputlock/index.js";
 import { createInputLockBackend } from "./inputlock/backends.js";
 import { registerLockHotkey } from "./inputlock/hotkey.js";
+import { createNutClipboardBackend } from "./clipboard/index.js";
 
 // Auto-release the input lock after this long without client activity.
 const INPUT_LOCK_AUTO_RELEASE_MS = 10_000;
@@ -47,6 +48,7 @@ async function main(): Promise<void> {
 
   const input = new InputController(await createNutBackend());
   const typingBackend = await createNutTypingBackend();
+  const clipboard = await createNutClipboardBackend();
   // Detect the loopback device once and share it between AudioCapture (Classic
   // audio) — detectLoopbackDevice() spawns
   // ffmpeg synchronously to enumerate devices, so running it twice at startup
@@ -134,6 +136,7 @@ async function main(): Promise<void> {
     inputLock,
     audio,
     volume,
+    clipboard,
     refreshHz,
     captureKind,
     // Serve the built client from the agent when it exists, so the UI is

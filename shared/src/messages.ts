@@ -127,6 +127,20 @@ export const SetOutputMuteMessage = z.object({
   muted: z.boolean(),
 });
 
+/**
+ * Ask the agent for its current clipboard text. Text-only, matching nut-js's
+ * own clipboard API — no images/rich content.
+ */
+export const GetClipboardMessage = z.object({
+  type: z.literal("getClipboard"),
+});
+
+/** Ask the agent to set its clipboard to this text. */
+export const SetClipboardMessage = z.object({
+  type: z.literal("setClipboard"),
+  text: z.string(),
+});
+
 // ---- agent -> client ----
 
 export const AuthResultMessage = z.object({
@@ -244,6 +258,12 @@ export const OutputVolumeStateMessage = z.object({
   muted: z.boolean(),
 });
 
+/** Reply to getClipboard, with the agent's current clipboard text. */
+export const ClipboardContentMessage = z.object({
+  type: z.literal("clipboardContent"),
+  text: z.string(),
+});
+
 // ---- unions ----
 
 export const ClientMessage = z.discriminatedUnion("type", [
@@ -258,6 +278,8 @@ export const ClientMessage = z.discriminatedUnion("type", [
   SetOutputVolumeMessage,
   SetOutputMuteMessage,
   RunDiagnosticsMessage,
+  GetClipboardMessage,
+  SetClipboardMessage,
 ]);
 export type ClientMessage = z.infer<typeof ClientMessage>;
 
@@ -271,6 +293,7 @@ export const AgentMessage = z.discriminatedUnion("type", [
   AudioStateMessage,
   OutputVolumeStateMessage,
   DiagnosticsMessage,
+  ClipboardContentMessage,
 ]);
 export type AgentMessage = z.infer<typeof AgentMessage>;
 

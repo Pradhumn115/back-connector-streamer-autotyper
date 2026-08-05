@@ -18,6 +18,7 @@ import { CaptureLoop, type CapturedImage } from "../capture/index.js";
 import { InputController, type InputBackend } from "../input/index.js";
 import type { TypingBackend } from "../autotyper/index.js";
 import { InputLockManager } from "../inputlock/index.js";
+import type { ClipboardBackend } from "../clipboard/index.js";
 
 function ephemeralTls(): { cert: string; key: string } {
   const pems = selfsigned.generate([{ name: "commonName", value: "test" }], {
@@ -63,6 +64,18 @@ function fakeTyping(): TypingBackend {
   return { async typeChar() {}, async backspace() {} };
 }
 
+function fakeClipboard(initial = ""): ClipboardBackend {
+  let content = initial;
+  return {
+    async getContent() {
+      return content;
+    },
+    async setContent(text: string) {
+      content = text;
+    },
+  };
+}
+
 function fakeInputLock(): InputLockManager {
   return new InputLockManager({
     backend: { supported: false, async lock() {}, async unlock() {} },
@@ -90,6 +103,7 @@ async function startServer(
     // A real controller would change the developer's actual speaker volume
     // while the suite runs; the tests here are about the connection, not the OS.
     volume: new UnsupportedVolumeController(),
+    clipboard: fakeClipboard(),
     refreshHz: 60,
     maxQueuedFrameBytes: opts.maxQueuedFrameBytes,
   });
@@ -277,6 +291,7 @@ test("lowers the encoder bitrate when the link is congested", async () => {
     inputLock: fakeInputLock(),
     audio: new AudioCapture(null),
     volume: new UnsupportedVolumeController(),
+    clipboard: fakeClipboard(),
     refreshHz: 60,
     maxQueuedFrameBytes: -1, // every frame is "behind"; simulates saturation
     initialBitrateKbps: 2500,
@@ -336,6 +351,7 @@ test("steps resolution and fps down when bitrate hits the floor", async () => {
     inputLock: fakeInputLock(),
     audio: new AudioCapture(null),
     volume: new UnsupportedVolumeController(),
+    clipboard: fakeClipboard(),
     refreshHz: 60,
     maxQueuedFrameBytes: -1, // permanently "behind"
     initialBitrateKbps: 700, // close to the floor, so it bottoms out quickly
@@ -365,4 +381,46 @@ test("steps resolution and fps down when bitrate hits the floor", async () => {
     last.width < 1920 || last.fps < 60,
     `expected a smaller frame or lower fps, got ${JSON.stringify(last)}`,
   );
+});
+
+test("getClipboard replies with the agent's clipboard text; setClipboard changes it", async () => {
+  const clipboard = fakeClipboard("initial-agent-text");
+  const server = new ConnectionServer({
+    secret: "s3cret",
+    nickname: "test-agent",
+    port: 0,
+    host: "127.0.0.1",
+    tls: ephemeralTls(),
+    input: fakeInput([]),
+    capture: fakeCapture(),
+    typingBackend: fakeTyping(),
+    inputLock: fakeInputLock(),
+    audio: new AudioCapture(null),
+    volume: new UnsupportedVolumeController(),
+    clipboard,
+    refreshHz: 60,
+  });
+  await server.listen();
+
+  const ws = new WebSocket(`wss://127.0.0.1:${server.boundPort()}`, { rejectUnauthorized: false });
+  await once(ws, "open");
+  const info = nextMessage(ws, "agentInfo");
+  ws.send(encodeMessage({ type: "auth", secret: "s3cret" }));
+  await info;
+
+  const contentPromise = nextMessage(ws, "clipboardContent");
+  ws.send(encodeMessage({ type: "getClipboard" }));
+  const content = await contentPromise;
+  assert.equal(content.type, "clipboardContent");
+  if (content.type === "clipboardContent") {
+    assert.equal(content.text, "initial-agent-text");
+  }
+
+  ws.send(encodeMessage({ type: "setClipboard", text: "from-the-client" }));
+  // No reply to wait on for setClipboard; give the agent's handler a moment.
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(await clipboard.getContent(), "from-the-client");
+
+  ws.close();
+  await server.close();
 });

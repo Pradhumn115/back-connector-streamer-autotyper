@@ -88,7 +88,14 @@ export function App() {
 
   // Wire mouse/keyboard to the canvas, gated by the control toggle. Video of
   // every kind lands on that one surface, so control needs no special case.
-  useRemoteControl(canvasRef, contentRectRef, conn.send, controlEnabled);
+  useRemoteControl(
+    canvasRef,
+    contentRectRef,
+    conn.send,
+    controlEnabled,
+    conn.getClipboard,
+    conn.setClipboard,
+  );
   // Touch gestures and the on-screen keyboard are the mobile equivalents of the
   // two halves above: a canvas gets neither for free.
   const stageRef = useRef<HTMLElement>(null);
@@ -375,6 +382,36 @@ export function App() {
                 : conn.inputLock.locked
                   ? "Agent's physical keyboard/mouse are blocked. Auto-releases after 10s idle or on disconnect."
                   : "Blocks the person at the agent from interfering — only your input gets through."}
+            </p>
+          </div>
+
+          <div className="card">
+            <div className="card-head">
+              <span className="card-title">Clipboard</span>
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button
+                type="button"
+                className="btn-mini"
+                onClick={conn.getClipboard}
+                disabled={!connected}
+              >
+                ⬇ Get remote clipboard
+              </button>
+              <button
+                type="button"
+                className="btn-mini"
+                onClick={conn.setClipboard}
+                disabled={!connected}
+              >
+                ⬆ Send to remote
+              </button>
+            </div>
+            <p className="hint">
+              Get pulls the agent's clipboard text into yours; Send pushes
+              yours to the agent. Text only. Also happens automatically on
+              Ctrl/Cmd+C, +X and +V while Remote control is on — these buttons
+              are the manual fallback (e.g. after a right-click copy).
             </p>
           </div>
 

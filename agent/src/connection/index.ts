@@ -21,6 +21,7 @@ import type { InputController } from "../input/index.js";
 import { runAutotype, type TypingBackend } from "../autotyper/index.js";
 import type { InputLockManager } from "../inputlock/index.js";
 import { runDiagnostics } from "../diagnostics/index.js";
+import type { ClipboardBackend } from "../clipboard/index.js";
 
 export interface ServerDeps {
   secret: string;
@@ -36,6 +37,8 @@ export interface ServerDeps {
   audio: AudioCapture;
   /** Controls the agent machine's own output volume; may report unsupported. */
   volume: VolumeController;
+  /** Reads/writes the agent machine's system clipboard (text-only). */
+  clipboard: ClipboardBackend;
   /** Detected display refresh rate (Hz), reported to the client for fps target. */
   refreshHz: number;
   /** Human-readable capture engine actually in use, surfaced in diagnostics. */
@@ -667,6 +670,14 @@ export class ConnectionServer {
           break;
         case "runDiagnostics":
           await this.handleRunDiagnostics(ws);
+          break;
+        case "getClipboard": {
+          const text = await this.deps.clipboard.getContent();
+          this.send(ws, { type: "clipboardContent", text });
+          break;
+        }
+        case "setClipboard":
+          await this.deps.clipboard.setContent(msg.text);
           break;
         case "auth":
           break; // already authenticated; ignore duplicate

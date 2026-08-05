@@ -130,6 +130,14 @@ export interface UseConnection {
   send: (msg: ClientMessage) => void;
   setAudio: (enabled: boolean) => void;
   runDiagnostics: () => void;
+  /** Fetch the agent's clipboard text and write it into this browser's clipboard. */
+  getClipboard: () => void;
+  /**
+   * Read this browser's clipboard text and set it as the agent's clipboard.
+   * Resolves once the send has gone out (never rejects) — useful for
+   * sequencing a paste keystroke after it.
+   */
+  setClipboard: () => Promise<void>;
   /** Retire the current error banner; used once a session comes up healthy. */
   clearError: () => void;
 }
@@ -383,6 +391,14 @@ export function useConnection(opts: UseConnectionOptions = {}): UseConnection {
         break;
       case "diagnostics":
         setDiagnostics({ running: false, checks: msg.checks });
+        break;
+      case "clipboardContent":
+        // Writing needs to happen close enough to the "Get remote clipboard"
+        // click for the browser's transient-activation window to still be
+        // open; a same-LAN round trip is comfortably within it.
+        void navigator.clipboard.writeText(msg.text).catch((err) => {
+          setLastError(`Couldn't write to your clipboard: ${String(err)}`);
+        });
         break;
       case "agentError":
         setLastError(msg.message);
@@ -658,6 +674,27 @@ export function useConnection(opts: UseConnectionOptions = {}): UseConnection {
     send({ type: "runDiagnostics" });
   }, [send]);
 
+  const getClipboard = useCallback(() => {
+    send({ type: "getClipboard" });
+  }, [send]);
+
+  const setClipboard = useCallback(() => {
+    // Read must happen directly in this click handler, not after the send —
+    // readText() also needs a user gesture, and there is no round trip to
+    // wait on for this direction. Returns a promise so a caller that needs to
+    // sequence something after the send (e.g. forwarding a paste keystroke
+    // only once this has gone out) can wait on it; a read failure degrades to
+    // "did nothing" rather than rejecting, so callers don't need a catch too.
+    return navigator.clipboard
+      .readText()
+      .then((text) => {
+        send({ type: "setClipboard", text });
+      })
+      .catch((err) => {
+        setLastError(`Couldn't read your clipboard: ${String(err)}`);
+      });
+  }, [send]);
+
   const clearError = useCallback(() => setLastError(null), []);
 
 
@@ -700,6 +737,8 @@ export function useConnection(opts: UseConnectionOptions = {}): UseConnection {
     send,
     setAudio,
     runDiagnostics,
+    getClipboard,
+    setClipboard,
     clearError,
   };
 }
