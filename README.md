@@ -128,17 +128,23 @@ npm start      # or: node launch.mjs
 On first run it installs/builds automatically if needed, then presents:
 
 ```
-  1  Full setup        install deps + prerequisites + build
-  2  Run agent         this machine gets controlled + streamed
-  3  Run client        control another machine from your browser
-  4  Run tunnel        expose the agent over Cloudflare (remote)
-  5  Rebuild           recompile all packages
-  6  Local test        agent + client on this machine
+  1  Full setup            install deps + prerequisites + build
+  2  Run agent             this machine gets controlled + streamed
+  3  Run agent (background) keeps running after this terminal closes
+  4  Agent status          is the background agent running?
+  5  Stop background agent
+  6  007 James Bond        auto-start on login, survives reboot + crashes
+  7  M (retire 007)        stop + remove the login-autostart service
+  8  Run client            control another machine from your browser
+  9  Run tunnel            expose the agent over Cloudflare (remote)
+  10 Rebuild               recompile all packages
+  11 Local test            agent + client on this machine
   q  Quit
 ```
 
-Pick **2** on the machine you want to control and **3** on the machine you're
-controlling from. Ctrl-C stops the running task and returns you to the menu.
+Pick **2** (or **3**/**6** for unattended use — see below) on the machine you
+want to control, and **8** on the machine you're controlling from. Ctrl-C stops
+the running task and returns you to the menu.
 
 > The launcher just orchestrates the individual `npm run …` scripts below — use
 > those directly if you prefer.
@@ -189,6 +195,42 @@ Override via env vars: `BCSA_PORT`, `BCSA_SECRET`, `BCSA_NICKNAME`.
 > video path. It's optional — if that port is blocked or the browser lacks
 > WebTransport, video falls back to the TCP WebSocket on the main port. Over
 > Tailscale both work; over a Cloudflare Tunnel only the WebSocket path is used.
+
+## Running the agent unattended
+
+`npm run agent` runs in the foreground and dies with the terminal. The
+launcher (`npm start`) has two ways to keep it running without a terminal open:
+
+**Option 3 — plain background.** Starts the agent detached, right now, until
+you stop it or reboot. Output goes to `agent/.data/agent.log`; the PID is
+tracked in `agent/.data/agent.pid`.
+- **4** checks whether it's running, **5** stops it.
+- Starting it again while it's already running is a no-op, not a duplicate
+  process.
+
+**Option 6 — 007 James Bond.** Installs the agent as a real, per-user
+**login-autostart service** — it comes back on its own after a reboot, and
+restarts itself if it crashes. No admin/sudo needed. Under the hood:
+- **macOS** — a `launchd` LaunchAgent (`~/Library/LaunchAgents/dev.beamdesk.agent.plist`).
+- **Linux** — a `systemd --user` unit (`~/.config/systemd/user/beamdesk-agent.service`).
+- **Windows** — a Task Scheduler task (`BeamdeskAgent`), triggered at logon.
+
+It's **login-triggered, not boot-triggered on purpose**: screen capture only
+works inside a real logged-in graphical session, so a true boot-time service
+(running as root/SYSTEM, before anyone logs in) would need elevated privileges
+to install and still capture nothing until someone actually logs in.
+
+- **7 (M — retire 007)** stops it and removes the login-autostart registration.
+- Plain background and 007 both bind the same port, so only one may run the
+  agent at a time — starting one while the other is active is refused with a
+  message instead of crashing.
+- **Agent status (4)** reports both mechanisms together.
+
+> ⚠️ **macOS note:** a permission you granted to Terminal (Accessibility,
+> Screen Recording) does **not** carry over to a process `launchd` runs
+> directly. If the agent keeps restarting after installing 007, check
+> `agent/.data/agent.log` — you likely need to grant that permission again to
+> whatever binary shows up there, in System Settings → Privacy & Security.
 
 ## Open the client (on your controlling device)
 
