@@ -1,6 +1,6 @@
 import { loadConfig } from "./config.js";
 import { loadOrCreateTls } from "./tls.js";
-import { localAddresses } from "./net.js";
+import { formatConnectionLines, localAddresses } from "./net.js";
 import { isElevated } from "./inputlock/elevation.js";
 import { CaptureLoop, createScreenshotCapture, type ScreenCapture } from "./capture/index.js";
 import { FfmpegCapture, ffmpegAvailable, screenCaptureInputArgs } from "./capture/ffmpeg.js";
@@ -192,7 +192,7 @@ function printBanner(
   captureKind: string,
   elevated: boolean,
 ): void {
-  const { lan, tailscale } = localAddresses();
+  const addresses = localAddresses();
   const lines: string[] = [];
   lines.push("");
   lines.push("  Beamdesk — agent is running");
@@ -203,11 +203,7 @@ function printBanner(
   lines.push(`  Capture:     ${captureKind}`);
   lines.push("");
   lines.push("  Connect from the client using one of:");
-  for (const ip of lan) lines.push(`    LAN:       ${ip}:${port}`);
-  for (const ip of tailscale) lines.push(`    Tailscale: ${ip}:${port}`);
-  if (lan.length === 0 && tailscale.length === 0) {
-    lines.push("    (no LAN/Tailscale IPv4 address detected)");
-  }
+  lines.push(...formatConnectionLines(addresses, port));
   // isElevated() only reports false on a non-elevated Windows agent, where
   // BlockInput would be silently refused. Warn so the user isn't surprised when
   // "Lock agent's local input" fails.

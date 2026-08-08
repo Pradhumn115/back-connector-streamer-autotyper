@@ -48,6 +48,10 @@ view its screen, control its mouse/keyboard, and run a human-like autotyper.
 - **Remote (no VPN, behind double NAT):** run a
   [Cloudflare Tunnel](#remote-access-via-cloudflare-tunnel) with `npm run tunnel`
   and connect to the `*.trycloudflare.com` URL it prints.
+- **Remote (IPv6):** if your ISP is dual-stack, the agent prints an `IPv6:`
+  address. IPv6 has no NAT, so that address reaches the machine directly with no
+  port-forward — see [addresses the agent prints](#addresses-the-agent-prints)
+  before you use it.
 
 ## Features
 
@@ -214,6 +218,31 @@ shared secret and a self-signed TLS certificate, then prints a banner:
 ```
 
 Override via env vars: `BCSA_PORT`, `BCSA_SECRET`, `BCSA_NICKNAME`.
+
+### Addresses the agent prints
+
+The banner lists every address that will actually reach this machine:
+
+| Label | What it is |
+|---|---|
+| `LAN` | private address from your router's DHCP — works from the same network |
+| `Tailscale` | `100.64.0.0/10` address — works from any device on your tailnet |
+| `Internet` | a public IPv4 assigned **directly** to this machine (a VPS, or an ISP that doesn't NAT you) |
+| `IPv6` | a global IPv6 address (`2000::/3`) — reachable from the internet, since IPv6 has no NAT |
+
+**Your router's public IP is not listed, on purpose.** It isn't an address of
+this machine — it belongs to the router's WAN interface, a separate device, and
+no API on this computer can read it. More to the point, connecting to it
+wouldn't work: the packet arrives at the router, which has no forwarding rule
+for the agent's port and drops it. You'd need a manual port-forward plus a
+static IP or DDNS, and it fails outright under CGNAT (which most mobile and many
+fibre ISPs use). Tailscale or `npm run tunnel` solve the same problem without
+any of that.
+
+> ⚠ If an `Internet` or `IPv6` line appears, this agent is reachable from the
+> public internet and only the shared secret stands in front of it. Use a strong
+> `BCSA_SECRET`, or firewall the port and reach the machine over Tailscale
+> instead. The banner prints this warning too.
 
 > The agent also opens **`BCSA_PORT` + 1** (UDP) for the **QUIC/WebTransport**
 > video path. It's optional — if that port is blocked or the browser lacks
