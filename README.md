@@ -114,6 +114,30 @@ client/   web app (React + Vite): view screen, control, autotype panel
   `screenshot-desktop` may require ImageMagick installed.
 - **Windows:** works out of the box.
 
+## Quick start — double-click the installer
+
+If you don't want to touch a terminal at all, the repo ships a one-click
+installer per OS. It installs **Node.js itself** if the machine doesn't have it
+(or has one older than v20), then does everything else and opens the launcher.
+
+| OS | What to do |
+|---|---|
+| **Windows** | Double-click **`install.bat`**. It asks for Administrator rights (needed for the audio driver), then installs Node via winget — or the official MSI when winget is missing. |
+| **macOS** | Double-click **`install.command`** in Finder. (First time, macOS may need *right-click → Open*.) |
+| **Linux** | Run **`./install.sh`** — or double-click it if your file manager offers "Run in Terminal". |
+
+Each one runs: install Node if missing → `npm install` → `npm run setup`
+(ffmpeg, cloudflared, audio loopback) → `npm run build` → the launcher menu.
+Re-running is safe; anything already installed is skipped.
+
+```bash
+./install.sh --yes         # unattended: answer every consent prompt with "yes"
+./install.sh --no-launch   # stop after building instead of opening the menu
+```
+
+Installing Node needs your password (`sudo` on macOS/Linux, the UAC prompt on
+Windows) — the exact download URL is printed before anything runs.
+
 ## Quick start (recommended) — the launcher
 
 The easiest way on any machine is the interactive launcher. It **auto-detects

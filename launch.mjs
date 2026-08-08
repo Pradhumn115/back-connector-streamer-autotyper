@@ -133,17 +133,30 @@ function missingDependencies() {
 function run(cmd, args) {
   return new Promise((resolve) => {
     console.log(color("dim", `\n$ ${cmd} ${args.join(" ")}\n`));
+    // The menu's readline holds stdin in flowing mode. A child that inherits
+    // this terminal and then asks a question — npm's own prompts, a package's
+    // postinstall script, `sudo` wanting a password during `npm run setup` —
+    // never sees a keystroke, because readline here consumes them first. The
+    // child waits on input that can't arrive and the whole run looks frozen
+    // until Ctrl-C. Hand stdin over for as long as the child owns the terminal.
+    rl.pause();
+    process.stdin.pause();
+    const done = (result) => {
+      process.stdin.resume();
+      rl.resume();
+      resolve(result);
+    };
     const child = spawn(cmd, args, { stdio: "inherit", cwd: ROOT, shell: IS_WIN });
     const swallow = () => {}; // keep the launcher alive while the child runs
     process.on("SIGINT", swallow);
     child.on("close", (code) => {
       process.removeListener("SIGINT", swallow);
-      resolve(code ?? 0);
+      done(code ?? 0);
     });
     child.on("error", (err) => {
       process.removeListener("SIGINT", swallow);
       console.log(color("red", `  failed to start: ${err.message}`));
-      resolve(1);
+      done(1);
     });
   });
 }
